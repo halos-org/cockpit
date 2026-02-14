@@ -10,10 +10,10 @@ This document contains important findings and notes for AI-assisted development 
 
 ### Fork Structure
 
-This repository (`cockpit-src/`) is a **local clone of the hatlabs/cockpit fork** of the upstream Cockpit project:
+This repository (`cockpit-src/`) is a **local clone of the halos-org/cockpit fork** of the upstream Cockpit project:
 
 - **Upstream**: `cockpit-project/cockpit` (original Cockpit project)
-- **Fork**: `hatlabs/cockpit` (HaLOS fork with WiFi features)
+- **Fork**: `halos-org/cockpit` (HaLOS fork with WiFi features)
 - **Local**: `cockpit-src/` (working directory in this workspace)
 
 ### Branching Strategy
@@ -25,26 +25,26 @@ This repository (`cockpit-src/`) is a **local clone of the hatlabs/cockpit fork*
 
 **Creating PRs**:
 ```bash
-# ✅ CORRECT - PR against hatlabs/cockpit with base=wifi
+# ✅ CORRECT - PR against halos-org/cockpit with base=wifi
 git checkout -b feat/my-feature fork/wifi
 # make changes, commit
 git push fork feat/my-feature
-gh pr create --repo hatlabs/cockpit --base wifi
+gh pr create --repo halos-org/cockpit --base wifi
 
 # ❌ WRONG - Don't base on main
 git checkout -b feat/my-feature fork/main  # ❌
-gh pr create --repo hatlabs/cockpit --base main  # ❌
+gh pr create --repo halos-org/cockpit --base main  # ❌
 ```
 
 **Creating Issues**:
-- All issues should be created in the `hatlabs/cockpit` repository
-- Use `gh issue create --repo hatlabs/cockpit`
+- All issues should be created in the `halos-org/cockpit` repository
+- Use `gh issue create --repo halos-org/cockpit`
 
 ### Remote Configuration
 
 The local repository has these remotes:
 - `origin`: `cockpit-project/cockpit` (upstream Cockpit project)
-- `fork`: `hatlabs/cockpit` (HaLOS fork - use this for pushing branches and creating PRs)
+- `fork`: `halos-org/cockpit` (HaLOS fork - use this for pushing branches and creating PRs)
 
 Always verify the PR base branch and repository before creating PRs!
 

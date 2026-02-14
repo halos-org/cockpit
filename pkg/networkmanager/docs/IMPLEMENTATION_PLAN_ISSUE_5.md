@@ -1,7 +1,7 @@
 # Implementation Plan: WiFi Access Point Mode (Issue #5)
 
 **Date:** 2025-11-30
-**Issue:** https://github.com/hatlabs/cockpit/issues/5
+**Issue:** https://github.com/halos-org/cockpit/issues/5
 **Status:** Planning Complete
 
 ## Overview

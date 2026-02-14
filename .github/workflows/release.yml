@@ -6,6 +6,9 @@ on:
       - '[0-9]*'
 
 
+permissions:
+  contents: write
+
 jobs:
   source:
     runs-on: ubuntu-latest
