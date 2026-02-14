@@ -473,7 +473,7 @@ export const WiFiAPDialog = ({ settings, connection, dev, dualMode = false }) =>
                 type: "802-11-wireless",
                 uuid: settings.connection.uuid || uuidv4(),
                 interface_name: iface,
-                autoconnect: false, // Manual activation for AP
+                autoconnect: true,
             },
             wifi: {
                 ssid,
@@ -526,7 +526,7 @@ export const WiFiAPDialog = ({ settings, connection, dev, dualMode = false }) =>
                         "type", "wifi",
                         "ifname", iface,
                         "con-name", ssid,
-                        "autoconnect", "no",
+                        "autoconnect", "yes",
                         "ssid", ssid,
                         "mode", "ap",
                         "ipv4.method", "shared",
@@ -845,7 +845,7 @@ export function getWiFiAPGhostSettings({ newIfaceName, dev }) {
             id: generateDefaultSSID(dev),
             type: "802-11-wireless",
             interface_name: newIfaceName || (dev && dev.Interface) || "",
-            autoconnect: false, // Manual activation for AP
+            autoconnect: true,
             uuid: "",
         },
         wifi: {
@@ -1297,6 +1297,14 @@ export const WiFiAPConfig = ({ dev, connection, activeConnection, apActive, canE
 
         const doDisable = async () => {
             try {
+                // Persist the disabled state so the AP doesn't restart on reboot
+                const uuid = settings?.connection?.uuid;
+                if (uuid) {
+                    await cockpit.spawn(
+                        ["nmcli", "connection", "modify", uuid, "connection.autoconnect", "no"],
+                        { superuser: "try", err: "message" }
+                    );
+                }
                 await model.client.call(
                     "/org/freedesktop/NetworkManager",
                     "org.freedesktop.NetworkManager",
