@@ -244,12 +244,30 @@ export const WiFiConnectDialog = ({ settings, connection, dev, ap }) => {
             return;
         }
 
+        // dev may be undefined when dialog opened via NetworkAction (e.g., "Add WiFi network" button).
+        // In that case, fall back to the first WiFi device (HaLOS hardware has a single WiFi adapter).
+        const wifiDev = dev || model.list_interfaces()
+                .map(i => i.Device)
+                .find(d => d && d.DeviceType === '802-11-wireless');
+
+        if (!wifiDev) {
+            setDialogError(_("No WiFi device found"));
+            return;
+        }
+
+        // When dev was not provided, interface_name from ghost settings may be a
+        // generated placeholder (e.g., "wifi0") rather than the real device name.
+        // Override it so NM binds the connection to the correct interface.
+        if (!dev) {
+            wifiSettings.connection.interface_name = wifiDev.Interface;
+        }
+
         // For new WiFi connections, use AddAndActivateConnection to create AND connect
         // For existing connections, use dialogSave to update settings
         if (!connection) {
             // New connection - use activate_with_settings which calls AddAndActivateConnection
             model.set_operation_in_progress(true);
-            dev.activate_with_settings(wifiSettings, null)
+            wifiDev.activate_with_settings(wifiSettings, null)
                     .then(() => {
                         setPassword("");
                         Dialogs.close();
@@ -260,7 +278,7 @@ export const WiFiConnectDialog = ({ settings, connection, dev, ap }) => {
             // Editing existing connection - use dialogSave
             dialogSave({
                 model,
-                dev,
+                dev: wifiDev,
                 connection,
                 settings: wifiSettings,
                 setDialogError,
