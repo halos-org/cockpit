@@ -36,6 +36,7 @@ import { DropdownItem } from '@patternfly/react-core/dist/esm/components/Dropdow
 import { AngleUpIcon, AngleDownIcon, StarIcon } from '@patternfly/react-icons';
 import { KebabDropdown } from 'cockpit-components-dropdown';
 import { TextInput } from '@patternfly/react-core/dist/esm/components/TextInput/index.js';
+import { Tooltip } from '@patternfly/react-core/dist/esm/components/Tooltip/index.js';
 import { Flex, FlexItem } from "@patternfly/react-core/dist/esm/layouts/Flex/index.js";
 import { Table, Tbody, Td, Th, Thead, Tr } from '@patternfly/react-table';
 import { useDialogs } from 'dialogs.jsx';
@@ -48,6 +49,55 @@ const _ = cockpit.gettext;
 
 // NetworkManager device state constants
 const NM_DEVICE_STATE_UNAVAILABLE = 20;
+
+// Tooltip shown on admin-gated controls in Cockpit Limited Access mode.
+const ADMIN_REQUIRED_TOOLTIP = N_("Administrative access required");
+
+// Reactive accessor for Cockpit's administrative-access state. Returns
+// { allowed: boolean | null }. Treat `null` (unresolved) as "not yet
+// allowed" so the brief permission-resolution race window stays gated.
+// Falls back to `allowed: true` when running outside Cockpit (test runs
+// without an explicit mock).
+const useAdminPermission = () => {
+    const [allowed, setAllowed] = useState(null);
+
+    useEffect(() => {
+        if (typeof cockpit === "undefined" || !cockpit.permission) {
+            setAllowed(true);
+            return;
+        }
+        const permission = cockpit.permission({ admin: true });
+        const update = () => setAllowed(permission.allowed);
+        update();
+        permission.addEventListener("changed", update);
+        return () => {
+            permission.removeEventListener("changed", update);
+            permission.close();
+        };
+    }, []);
+
+    return { allowed };
+};
+
+// PatternFly Button wrapper that uses `isAriaDisabled` (suppresses
+// onClick via preventDefault) when admin is required and wraps the
+// disabled button in a Tooltip explaining the elevation requirement.
+const AdminGatedButton = ({ isAdminRequired, isAriaDisabled, children, ...props }) => {
+    const button = (
+        <Button {...props} isAriaDisabled={isAdminRequired || isAriaDisabled}>
+            {children}
+        </Button>
+    );
+    if (isAdminRequired) {
+        return <Tooltip content={_(ADMIN_REQUIRED_TOOLTIP)}>{button}</Tooltip>;
+    }
+    return button;
+};
+
+// N_ marks a string for gettext extraction without translating at definition
+// time. `_(N_("..."))` translates at call time so the same string can be
+// referenced from multiple call sites.
+function N_(s) { return s }
 
 // Parse security flags from AccessPoint properties
 function parseSecurityFlags(flags, wpaFlags, rsnFlags) {
@@ -106,9 +156,16 @@ const SecurityBadge = ({ security }) => {
 };
 
 // WiFi Network List Item
-const WiFiNetworkItem = ({ ap, onClick, isSaved, isConnected }) => {
-    return (
-        <ListItem onClick={onClick} style={{ cursor: 'pointer' }}>
+const WiFiNetworkItem = ({ ap, onClick, isSaved, isConnected, isAdminRequired }) => {
+    const item = (
+        <ListItem
+            onClick={isAdminRequired ? undefined : onClick}
+            style={{
+                cursor: isAdminRequired ? 'not-allowed' : 'pointer',
+                opacity: isAdminRequired ? 0.6 : 1,
+            }}
+            aria-disabled={isAdminRequired || undefined}
+        >
             <Flex alignItems={{ default: 'alignItemsCenter' }}>
                 <FlexItem flex={{ default: 'flex_1' }}>
                     <span style={{ fontWeight: isConnected ? 'bold' : 'normal' }}>
@@ -125,10 +182,14 @@ const WiFiNetworkItem = ({ ap, onClick, isSaved, isConnected }) => {
             </Flex>
         </ListItem>
     );
+    if (isAdminRequired) {
+        return <Tooltip content={_(ADMIN_REQUIRED_TOOLTIP)}>{item}</Tooltip>;
+    }
+    return item;
 };
 
 // WiFi Network List Component
-const WiFiNetworkList = ({ accessPoints, onConnect, scanning, savedSSIDs = new Set(), connectedSSID }) => {
+const WiFiNetworkList = ({ accessPoints, onConnect, scanning, savedSSIDs = new Set(), connectedSSID, isAdminRequired }) => {
     if (accessPoints.length === 0 && !scanning) {
         return (
             <EmptyState>
@@ -171,6 +232,7 @@ const WiFiNetworkList = ({ accessPoints, onConnect, scanning, savedSSIDs = new S
                     onClick={() => onConnect(ap)}
                     isSaved={savedSSIDs.has(ap.ssid)}
                     isConnected={ap.ssid === connectedSSID}
+                    isAdminRequired={isAdminRequired}
                 />
             ))}
         </List>
@@ -1291,7 +1353,7 @@ const WiFiAPClientList = ({ iface }) => {
 };
 
 // WiFi AP Configuration Status Component
-export const WiFiAPConfig = ({ dev, connection, activeConnection, apActive, canEnableAP, onEnableAP, deviceUnavailable }) => {
+export const WiFiAPConfig = ({ dev, connection, activeConnection, apActive, canEnableAP, onEnableAP, deviceUnavailable, isAdminRequired }) => {
     const model = useContext(ModelContext);
     const Dialogs = useDialogs();
     const [error, setError] = useState(null);
@@ -1359,13 +1421,14 @@ export const WiFiAPConfig = ({ dev, connection, activeConnection, apActive, canE
                 <CardHeader actions={canEnableAP
                     ? {
                         actions: (
-                            <Button
+                            <AdminGatedButton
                                 variant="primary"
                                 onClick={onEnableAP}
-                                isDisabled={deviceUnavailable}
+                                isAriaDisabled={deviceUnavailable}
+                                isAdminRequired={isAdminRequired}
                             >
                                 {_("Enable")}
-                            </Button>
+                            </AdminGatedButton>
                         )
                     }
                     : undefined}>
@@ -1385,12 +1448,21 @@ export const WiFiAPConfig = ({ dev, connection, activeConnection, apActive, canE
             <CardHeader actions={{
                 actions: (
                     <>
-                        <Button variant="secondary" onClick={handleConfigure} style={{ marginRight: "var(--pf-global--spacer--sm)" }}>
+                        <AdminGatedButton
+                            variant="secondary"
+                            onClick={handleConfigure}
+                            isAdminRequired={isAdminRequired}
+                            style={{ marginRight: "var(--pf-global--spacer--sm)" }}
+                        >
                             {_("Configure")}
-                        </Button>
-                        <Button variant="danger" onClick={handleDisable}>
+                        </AdminGatedButton>
+                        <AdminGatedButton
+                            variant="danger"
+                            onClick={handleDisable}
+                            isAdminRequired={isAdminRequired}
+                        >
                             {_("Disable")}
-                        </Button>
+                        </AdminGatedButton>
                     </>
                 )
             }}>
@@ -1763,6 +1835,8 @@ function getWiFiConnectionStates(dev, model) {
 export const WiFiPage = ({ iface, dev }) => {
     const model = useContext(ModelContext);
     const Dialogs = useDialogs();
+    const { allowed: isAdminAllowed } = useAdminPermission();
+    const isAdminRequired = isAdminAllowed !== true;
     const [scanning, setScanning] = useState(false);
     const [accessPoints, setAccessPoints] = useState([]);
     const [error, setError] = useState(null);
@@ -2216,15 +2290,16 @@ export const WiFiPage = ({ iface, dev }) => {
     // Action links for WiFi unavailable alert (only show enable button if rfkill blocked)
     const wifiUnavailableActionLinks = rfkillBlocked
         ? (
-            <Button
+            <AdminGatedButton
                 variant="link"
                 isInline
                 onClick={handleEnableWifi}
                 isLoading={enablingWifi}
-                isDisabled={enablingWifi}
+                isAriaDisabled={enablingWifi}
+                isAdminRequired={isAdminRequired}
             >
                 {enablingWifi ? _("Enabling...") : _("Enable WiFi")}
-            </Button>
+            </AdminGatedButton>
         )
         : undefined;
 
@@ -2267,6 +2342,7 @@ export const WiFiPage = ({ iface, dev }) => {
                     canEnableAP={canEnableAP}
                     onEnableAP={handleEnableAP}
                     deviceUnavailable={deviceUnavailable}
+                    isAdminRequired={isAdminRequired}
                 />
             </div>
 
@@ -2286,9 +2362,14 @@ export const WiFiPage = ({ iface, dev }) => {
                             </Button>
                         </FlexItem>
                         <FlexItem>
-                            <Button variant="secondary" onClick={handleConnectHidden} isDisabled={deviceUnavailable}>
+                            <AdminGatedButton
+                                variant="secondary"
+                                onClick={handleConnectHidden}
+                                isAriaDisabled={deviceUnavailable}
+                                isAdminRequired={isAdminRequired}
+                            >
                                 {_("Connect to Hidden Network")}
-                            </Button>
+                            </AdminGatedButton>
                         </FlexItem>
                     </Flex>
                 </CardHeader>
@@ -2315,6 +2396,7 @@ export const WiFiPage = ({ iface, dev }) => {
                         scanning={scanning}
                         savedSSIDs={savedSSIDs}
                         connectedSSID={connectedSSID}
+                        isAdminRequired={isAdminRequired}
                     />
                 </CardBody>
             </Card>
