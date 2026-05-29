@@ -50,6 +50,11 @@ const _ = cockpit.gettext;
 // NetworkManager device state constants
 const NM_DEVICE_STATE_UNAVAILABLE = 20;
 
+// N_ marks a string for gettext extraction without translating at definition
+// time. `_(N_("..."))` translates at call time so the same string can be
+// referenced from multiple call sites.
+function N_(s) { return s }
+
 // Tooltip shown on admin-gated controls in Cockpit Limited Access mode.
 const ADMIN_REQUIRED_TOOLTIP = N_("Administrative access required");
 
@@ -93,11 +98,6 @@ const AdminGatedButton = ({ isAdminRequired, isAriaDisabled, children, ...props 
     }
     return button;
 };
-
-// N_ marks a string for gettext extraction without translating at definition
-// time. `_(N_("..."))` translates at call time so the same string can be
-// referenced from multiple call sites.
-function N_(s) { return s }
 
 // Parse security flags from AccessPoint properties
 function parseSecurityFlags(flags, wpaFlags, rsnFlags) {
@@ -157,9 +157,13 @@ const SecurityBadge = ({ security }) => {
 
 // WiFi Network List Item
 const WiFiNetworkItem = ({ ap, onClick, isSaved, isConnected, isAdminRequired }) => {
+    // Suppress the action when admin is required but keep the onClick handler
+    // attached so the ListItem stays focusable and the Tooltip below triggers
+    // on keyboard focus, not just mouse hover.
+    const handleClick = isAdminRequired ? e => e.preventDefault() : onClick;
     const item = (
         <ListItem
-            onClick={isAdminRequired ? undefined : onClick}
+            onClick={handleClick}
             style={{
                 cursor: isAdminRequired ? 'not-allowed' : 'pointer',
                 opacity: isAdminRequired ? 0.6 : 1,
@@ -1059,7 +1063,7 @@ const WiFiHiddenDialog = ({ dev }) => {
 };
 
 // Saved Networks List Component
-const WiFiSavedNetworks = ({ dev, model }) => {
+const WiFiSavedNetworks = ({ dev, model, isAdminRequired }) => {
     const [savedNetworks, setSavedNetworks] = useState([]);
     const [error, setError] = useState(null);
 
@@ -1190,28 +1194,36 @@ const WiFiSavedNetworks = ({ dev, model }) => {
                                     </FlexItem>
                                     <FlexItem>
                                         <span style={{ display: "inline-flex", gap: "0" }}>
-                                            <Button
+                                            <AdminGatedButton
                                                 variant="plain"
                                                 aria-label={_("Move up")}
-                                                isDisabled={index === 0}
+                                                isAriaDisabled={index === 0}
+                                                isAdminRequired={isAdminRequired}
                                                 onClick={() => handleMoveUp(connection, index)}
                                             >
                                                 <AngleUpIcon />
-                                            </Button>
-                                            <Button
+                                            </AdminGatedButton>
+                                            <AdminGatedButton
                                                 variant="plain"
                                                 aria-label={_("Move down")}
-                                                isDisabled={index === savedNetworks.length - 1}
+                                                isAriaDisabled={index === savedNetworks.length - 1}
+                                                isAdminRequired={isAdminRequired}
                                                 onClick={() => handleMoveDown(connection, index)}
                                             >
                                                 <AngleDownIcon />
-                                            </Button>
+                                            </AdminGatedButton>
                                         </span>
                                     </FlexItem>
                                     <FlexItem>
                                         <KebabDropdown
                                             dropdownItems={[
-                                                <DropdownItem key="forget" onClick={() => handleForget(connection)} isDanger>
+                                                <DropdownItem
+                                                    key="forget"
+                                                    onClick={() => handleForget(connection)}
+                                                    isAriaDisabled={isAdminRequired}
+                                                    tooltipProps={isAdminRequired ? { content: _(ADMIN_REQUIRED_TOOLTIP) } : undefined}
+                                                    isDanger
+                                                >
                                                     {_("Forget")}
                                                 </DropdownItem>
                                             ]}
@@ -2400,7 +2412,7 @@ export const WiFiPage = ({ iface, dev }) => {
                     />
                 </CardBody>
             </Card>
-            <WiFiSavedNetworks dev={dev} model={model} />
+            <WiFiSavedNetworks dev={dev} model={model} isAdminRequired={isAdminRequired} />
         </>
     );
 };
