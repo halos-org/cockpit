@@ -1378,9 +1378,16 @@ export const WiFiAPConfig = ({ dev, connection, activeConnection, apActive, canE
                     : undefined}>
                     <CardTitle>{_("Access Point")}</CardTitle>
                 </CardHeader>
-                {!canEnableAP && (
+                {(!canEnableAP || (isAdminGated && canEnableAP)) && (
                     <CardBody>
-                        {_("This WiFi adapter does not support Access Point mode.")}
+                        {!canEnableAP && _("This WiFi adapter does not support Access Point mode.")}
+                        {isAdminGated && canEnableAP && (
+                            <Alert
+                                variant="info"
+                                isInline
+                                title={_("Administrative access required to enable the Access Point.")}
+                            />
+                        )}
                     </CardBody>
                 )}
             </Card>
@@ -1392,6 +1399,11 @@ export const WiFiAPConfig = ({ dev, connection, activeConnection, apActive, canE
             <CardHeader actions={{
                 actions: (
                     <>
+                        {/* Configure is gated even though it only opens a dialog: every
+                            settings change inside WiFiAPDialog ultimately needs admin to
+                            persist, so allowing the dialog to open would lead the user
+                            into a workflow they can't complete. Matches the audit
+                            (halos-org/halos#121) prescription. */}
                         <AdminGatedButton variant="secondary" onClick={handleConfigure} style={{ marginRight: "var(--pf-global--spacer--sm)" }} isAdminGated={isAdminGated}>
                             {_("Configure")}
                         </AdminGatedButton>
@@ -1409,6 +1421,14 @@ export const WiFiAPConfig = ({ dev, connection, activeConnection, apActive, canE
                         variant="danger"
                         isInline
                         title={error}
+                        style={{ marginBottom: "1rem" }}
+                    />
+                )}
+                {isAdminGated && (
+                    <Alert
+                        variant="info"
+                        isInline
+                        title={_("Administrative access required to configure or disable the Access Point.")}
                         style={{ marginBottom: "1rem" }}
                     />
                 )}
@@ -1771,7 +1791,7 @@ export const WiFiPage = ({ iface, dev }) => {
     const model = useContext(ModelContext);
     const Dialogs = useDialogs();
     const { allowed: adminAllowed } = useAdminPermission();
-    const adminGated = isAdminRequired({ allowed: adminAllowed });
+    const adminGated = isAdminRequired(adminAllowed);
     const [scanning, setScanning] = useState(false);
     const [accessPoints, setAccessPoints] = useState([]);
     const [error, setError] = useState(null);

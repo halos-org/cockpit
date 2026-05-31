@@ -35,40 +35,56 @@
 import cockpit from "cockpit";
 import { useEffect, useState } from "react";
 
+// Source-string anchor for translators. The actual `_("...")` call lives at
+// the call site in `wifi-admin-gated-button.jsx` so xgettext can extract it.
+// The QUnit suite pins this constant to keep cross-module copies aligned.
 export const ADMIN_REQUIRED_TOOLTIP = "Administrative access required";
 
-// Treat the loading window (`allowed === null`) and a missing permission
-// handle as gated. The contract is tested in test-wifi-admin-gating.js.
-export function isAdminRequired(permission) {
-    if (!permission) return true;
-    return permission.allowed !== true;
+// Treat the loading window (`allowed === null`) as gated alongside the
+// resolved-denied state. Cockpit's `Permission.allowed` is `null` until the
+// initial DBus check resolves; if we let null fall through, controls would
+// flicker enabled during page load. Contract pinned in test-wifi-admin-gating.js.
+export function isAdminRequired(allowed) {
+    return allowed !== true;
 }
 
-// Subscribe to `cockpit.permission({ admin: true })` once per mount and
-// mirror `allowed` into React state so the UI re-renders on transitions.
+// Pure subscription helper. Takes cockpit (so the QUnit suite can inject a
+// stub) and an onChange callback, and returns a cleanup function. Mirrors
+// the pattern used by upstream `pkg/lib/superuser.js:117-122`.
 //
-// Outside a Cockpit page (e.g. unit-test harness without a cockpit global)
-// the hook resolves to `allowed: true` so it does not gate development.
+// When cockpit is unavailable (test harness, dev environment without a
+// Cockpit session) the helper resolves to `allowed: true` so it does not
+// gate development.
+export function subscribeAdminPermission(cockpitObj, onChange) {
+    if (!cockpitObj || typeof cockpitObj.permission !== "function") {
+        onChange(true);
+        return () => {};
+    }
+
+    const permission = cockpitObj.permission({ admin: true });
+    const sync = () => onChange(permission.allowed);
+    sync();
+    permission.addEventListener("changed", sync);
+
+    return () => {
+        permission.removeEventListener("changed", sync);
+        if (typeof permission.close === "function")
+            permission.close();
+    };
+}
+
+// React hook wrapper around subscribeAdminPermission. The hook is a thin
+// shim; all behavioral logic lives in the pure helper above so it can be
+// exercised without a React render harness.
+//
+// Note: upstream `Permission.maybe_reload` (pkg/lib/cockpit.js) reloads the
+// whole page when admin status changes after initial resolution, so the
+// `changed` listener really only matters for the initial null → resolved
+// transition — subsequent transitions never reach React.
 export function useAdminPermission() {
     const [allowed, setAllowed] = useState(null);
 
-    useEffect(() => {
-        if (!cockpit || typeof cockpit.permission !== "function") {
-            setAllowed(true);
-            return undefined;
-        }
-
-        const permission = cockpit.permission({ admin: true });
-        const sync = () => setAllowed(permission.allowed);
-        sync();
-        permission.addEventListener("changed", sync);
-
-        return () => {
-            permission.removeEventListener("changed", sync);
-            if (typeof permission.close === "function")
-                permission.close();
-        };
-    }, []);
+    useEffect(() => subscribeAdminPermission(cockpit, setAllowed), []);
 
     return { allowed };
 }

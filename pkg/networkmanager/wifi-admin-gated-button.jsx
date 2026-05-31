@@ -21,7 +21,6 @@ import cockpit from "cockpit";
 import React from "react";
 import { Button } from "@patternfly/react-core/dist/esm/components/Button/index.js";
 import { Tooltip } from "@patternfly/react-core/dist/esm/components/Tooltip/index.js";
-import { ADMIN_REQUIRED_TOOLTIP } from "./wifi-admin-gating";
 
 const _ = cockpit.gettext;
 
@@ -52,5 +51,9 @@ export const AdminGatedButton = ({
     if (!isAdminGated)
         return button;
 
-    return <Tooltip content={_(ADMIN_REQUIRED_TOOLTIP)}>{button}</Tooltip>;
+    // Literal kept in sync with ADMIN_REQUIRED_TOOLTIP in wifi-admin-gating.js
+    // so xgettext sees the string for extraction. The test in
+    // test-wifi-admin-gating.js pins the constant; any drift between this
+    // literal and the constant should be caught in review.
+    return <Tooltip content={_("Administrative access required")}>{button}</Tooltip>;
 };
