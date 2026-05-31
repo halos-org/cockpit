@@ -2312,9 +2312,14 @@ export const WiFiPage = ({ iface, dev }) => {
                     <CardTitle>{_("WiFi Networks")}</CardTitle>
                     <Flex style={{ gap: "1rem" }}>
                         <FlexItem>
-                            <AdminGatedButton onClick={handleScan} isDisabled={scanning || deviceUnavailable} style={{ minWidth: "7rem" }} isAdminGated={adminGated}>
+                            {/* Scan is intentionally NOT admin-gated. NetworkManager's polkit
+                                action `org.freedesktop.NetworkManager.wifi.scan` defaults to
+                                `yes` for any active session, so RequestScan succeeds in
+                                Limited Access. Gating it would make a working control look
+                                broken. */}
+                            <Button onClick={handleScan} isDisabled={scanning || deviceUnavailable} style={{ minWidth: "7rem" }}>
                                 {scanning ? _("Scanning...") : _("Scan")}
-                            </AdminGatedButton>
+                            </Button>
                         </FlexItem>
                         <FlexItem>
                             <AdminGatedButton variant="secondary" onClick={handleConnectHidden} isDisabled={deviceUnavailable} isAdminGated={adminGated}>
@@ -2344,7 +2349,7 @@ export const WiFiPage = ({ iface, dev }) => {
                         <Alert
                             variant="info"
                             isInline
-                            title={_("Administrative access required to scan or connect to networks.")}
+                            title={_("Administrative access required to connect to networks.")}
                             style={{ marginBottom: "1rem" }}
                         />
                     )}
