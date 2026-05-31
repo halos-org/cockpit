@@ -88,6 +88,7 @@ const info = {
         "networkmanager/test-utils.js",
         "networkmanager/test-wifi-hooks.js",
         "networkmanager/test-wifi-components.js",
+        "networkmanager/test-wifi-admin-gating.js",
 
         "shell/machines/test-machines.js",
 

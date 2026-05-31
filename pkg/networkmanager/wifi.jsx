@@ -43,6 +43,8 @@ import { v4 as uuidv4 } from 'uuid';
 import { Name, NetworkModal, dialogSave } from "./dialogs-common";
 import { ModelContext } from './model-context';
 import { decode_nm_property } from './utils';
+import { isAdminRequired, useAdminPermission } from './wifi-admin-gating';
+import { AdminGatedButton } from './wifi-admin-gated-button';
 
 const _ = cockpit.gettext;
 
@@ -106,9 +108,12 @@ const SecurityBadge = ({ security }) => {
 };
 
 // WiFi Network List Item
-const WiFiNetworkItem = ({ ap, onClick, isSaved, isConnected }) => {
+const WiFiNetworkItem = ({ ap, onClick, isSaved, isConnected, isAdminGated }) => {
+    const style = isAdminGated
+        ? { cursor: 'not-allowed', opacity: 0.5 }
+        : { cursor: 'pointer' };
     return (
-        <ListItem onClick={onClick} style={{ cursor: 'pointer' }}>
+        <ListItem onClick={isAdminGated ? undefined : onClick} aria-disabled={isAdminGated || undefined} style={style}>
             <Flex alignItems={{ default: 'alignItemsCenter' }}>
                 <FlexItem flex={{ default: 'flex_1' }}>
                     <span style={{ fontWeight: isConnected ? 'bold' : 'normal' }}>
@@ -128,7 +133,7 @@ const WiFiNetworkItem = ({ ap, onClick, isSaved, isConnected }) => {
 };
 
 // WiFi Network List Component
-const WiFiNetworkList = ({ accessPoints, onConnect, scanning, savedSSIDs = new Set(), connectedSSID }) => {
+const WiFiNetworkList = ({ accessPoints, onConnect, scanning, savedSSIDs = new Set(), connectedSSID, isAdminGated }) => {
     if (accessPoints.length === 0 && !scanning) {
         return (
             <EmptyState>
@@ -171,6 +176,7 @@ const WiFiNetworkList = ({ accessPoints, onConnect, scanning, savedSSIDs = new S
                     onClick={() => onConnect(ap)}
                     isSaved={savedSSIDs.has(ap.ssid)}
                     isConnected={ap.ssid === connectedSSID}
+                    isAdminGated={isAdminGated}
                 />
             ))}
         </List>
@@ -1291,7 +1297,7 @@ const WiFiAPClientList = ({ iface }) => {
 };
 
 // WiFi AP Configuration Status Component
-export const WiFiAPConfig = ({ dev, connection, activeConnection, apActive, canEnableAP, onEnableAP, deviceUnavailable }) => {
+export const WiFiAPConfig = ({ dev, connection, activeConnection, apActive, canEnableAP, onEnableAP, deviceUnavailable, isAdminGated }) => {
     const model = useContext(ModelContext);
     const Dialogs = useDialogs();
     const [error, setError] = useState(null);
@@ -1359,21 +1365,29 @@ export const WiFiAPConfig = ({ dev, connection, activeConnection, apActive, canE
                 <CardHeader actions={canEnableAP
                     ? {
                         actions: (
-                            <Button
+                            <AdminGatedButton
                                 variant="primary"
                                 onClick={onEnableAP}
                                 isDisabled={deviceUnavailable}
+                                isAdminGated={isAdminGated}
                             >
                                 {_("Enable")}
-                            </Button>
+                            </AdminGatedButton>
                         )
                     }
                     : undefined}>
                     <CardTitle>{_("Access Point")}</CardTitle>
                 </CardHeader>
-                {!canEnableAP && (
+                {(!canEnableAP || (isAdminGated && canEnableAP)) && (
                     <CardBody>
-                        {_("This WiFi adapter does not support Access Point mode.")}
+                        {!canEnableAP && _("This WiFi adapter does not support Access Point mode.")}
+                        {isAdminGated && canEnableAP && (
+                            <Alert
+                                variant="info"
+                                isInline
+                                title={_("Administrative access required to enable the Access Point.")}
+                            />
+                        )}
                     </CardBody>
                 )}
             </Card>
@@ -1385,12 +1399,17 @@ export const WiFiAPConfig = ({ dev, connection, activeConnection, apActive, canE
             <CardHeader actions={{
                 actions: (
                     <>
-                        <Button variant="secondary" onClick={handleConfigure} style={{ marginRight: "var(--pf-global--spacer--sm)" }}>
+                        {/* Configure is gated even though it only opens a dialog: every
+                            settings change inside WiFiAPDialog ultimately needs admin to
+                            persist, so allowing the dialog to open would lead the user
+                            into a workflow they can't complete. Matches the audit
+                            (halos-org/halos#121) prescription. */}
+                        <AdminGatedButton variant="secondary" onClick={handleConfigure} style={{ marginRight: "var(--pf-global--spacer--sm)" }} isAdminGated={isAdminGated}>
                             {_("Configure")}
-                        </Button>
-                        <Button variant="danger" onClick={handleDisable}>
+                        </AdminGatedButton>
+                        <AdminGatedButton variant="danger" onClick={handleDisable} isAdminGated={isAdminGated}>
                             {_("Disable")}
-                        </Button>
+                        </AdminGatedButton>
                     </>
                 )
             }}>
@@ -1402,6 +1421,14 @@ export const WiFiAPConfig = ({ dev, connection, activeConnection, apActive, canE
                         variant="danger"
                         isInline
                         title={error}
+                        style={{ marginBottom: "1rem" }}
+                    />
+                )}
+                {isAdminGated && (
+                    <Alert
+                        variant="info"
+                        isInline
+                        title={_("Administrative access required to configure or disable the Access Point.")}
                         style={{ marginBottom: "1rem" }}
                     />
                 )}
@@ -1763,6 +1790,8 @@ function getWiFiConnectionStates(dev, model) {
 export const WiFiPage = ({ iface, dev }) => {
     const model = useContext(ModelContext);
     const Dialogs = useDialogs();
+    const { allowed: adminAllowed } = useAdminPermission();
+    const adminGated = isAdminRequired(adminAllowed);
     const [scanning, setScanning] = useState(false);
     const [accessPoints, setAccessPoints] = useState([]);
     const [error, setError] = useState(null);
@@ -2216,15 +2245,16 @@ export const WiFiPage = ({ iface, dev }) => {
     // Action links for WiFi unavailable alert (only show enable button if rfkill blocked)
     const wifiUnavailableActionLinks = rfkillBlocked
         ? (
-            <Button
+            <AdminGatedButton
                 variant="link"
                 isInline
                 onClick={handleEnableWifi}
                 isLoading={enablingWifi}
                 isDisabled={enablingWifi}
+                isAdminGated={adminGated}
             >
                 {enablingWifi ? _("Enabling...") : _("Enable WiFi")}
-            </Button>
+            </AdminGatedButton>
         )
         : undefined;
 
@@ -2267,6 +2297,7 @@ export const WiFiPage = ({ iface, dev }) => {
                     canEnableAP={canEnableAP}
                     onEnableAP={handleEnableAP}
                     deviceUnavailable={deviceUnavailable}
+                    isAdminGated={adminGated}
                 />
             </div>
 
@@ -2281,14 +2312,14 @@ export const WiFiPage = ({ iface, dev }) => {
                     <CardTitle>{_("WiFi Networks")}</CardTitle>
                     <Flex style={{ gap: "1rem" }}>
                         <FlexItem>
-                            <Button onClick={handleScan} isDisabled={scanning || deviceUnavailable} style={{ minWidth: "7rem" }}>
+                            <AdminGatedButton onClick={handleScan} isDisabled={scanning || deviceUnavailable} style={{ minWidth: "7rem" }} isAdminGated={adminGated}>
                                 {scanning ? _("Scanning...") : _("Scan")}
-                            </Button>
+                            </AdminGatedButton>
                         </FlexItem>
                         <FlexItem>
-                            <Button variant="secondary" onClick={handleConnectHidden} isDisabled={deviceUnavailable}>
+                            <AdminGatedButton variant="secondary" onClick={handleConnectHidden} isDisabled={deviceUnavailable} isAdminGated={adminGated}>
                                 {_("Connect to Hidden Network")}
-                            </Button>
+                            </AdminGatedButton>
                         </FlexItem>
                     </Flex>
                 </CardHeader>
@@ -2309,12 +2340,21 @@ export const WiFiPage = ({ iface, dev }) => {
                             style={{ marginBottom: "1rem" }}
                         />
                     )}
+                    {adminGated && (
+                        <Alert
+                            variant="info"
+                            isInline
+                            title={_("Administrative access required to scan or connect to networks.")}
+                            style={{ marginBottom: "1rem" }}
+                        />
+                    )}
                     <WiFiNetworkList
                         accessPoints={accessPoints}
                         onConnect={handleConnect}
                         scanning={scanning}
                         savedSSIDs={savedSSIDs}
                         connectedSSID={connectedSSID}
+                        isAdminGated={adminGated}
                     />
                 </CardBody>
             </Card>
