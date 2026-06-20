@@ -48,7 +48,7 @@ import { AdminGatedButton } from './wifi-admin-gated-button';
 import { apIntegrationModeLabel, apIpRangeText } from './wifi-hooks';
 import {
     classifyApIntegrationMode, isManagedApMode, AP_INTEGRATION_MODES,
-    apModeIpv4Settings, apModeNormalizeChannel, isApModeChannelValid,
+    apModeIpv4Settings, apModeNormalizeChannel, isApModeChannelValid, apModeChannelToEmit,
     AP_CHANNELS_24, AP_CHANNELS_5_DFS_FREE,
 } from './ap-integration-mode';
 
@@ -364,17 +364,6 @@ export const WiFiAPDialog = ({ settings, connection, dev, dualMode = false }) =>
 
     // Safely access settings with fallbacks
     const safeSettings = settings || {};
-    const [iface, setIface] = useState(safeSettings.connection?.interface_name || (dev && dev.Interface) || "");
-    const [ssid, setSSID] = useState(safeSettings.wifi?.ssid || generateDefaultSSID(dev));
-    const [password, setPassword] = useState("");
-    const [securityType, setSecurityType] = useState(safeSettings.wifi_security?.key_mgmt || "wpa-psk");
-    const [band, setBand] = useState(safeSettings.wifi?.band || "bg");
-    const [channel, setChannel] = useState(safeSettings.wifi?.channel || 0);
-    const [hidden, setHidden] = useState(safeSettings.wifi?.hidden || false);
-    const [ipAddress, setIPAddress] = useState(safeSettings.ipv4?.address_data?.[0]?.address || "10.42.0.1");
-    const [prefix, setPrefix] = useState(safeSettings.ipv4?.address_data?.[0]?.prefix || 24);
-    const [dialogError, setDialogError] = useState("");
-
     const isCreateDialog = !connection;
 
     // The AP's current integration mode (Isolated on create). Custom APs never
@@ -383,8 +372,22 @@ export const WiFiAPDialog = ({ settings, connection, dev, dualMode = false }) =>
     const currentMode = isCreateDialog
         ? AP_INTEGRATION_MODES.ISOLATED
         : classifyApIntegrationMode(connection);
-    const [mode, setMode] = useState(
-        isManagedApMode(currentMode) ? currentMode : AP_INTEGRATION_MODES.ISOLATED);
+    const initialMode = isManagedApMode(currentMode) ? currentMode : AP_INTEGRATION_MODES.ISOLATED;
+    const initialBand = safeSettings.wifi?.band || "bg";
+
+    const [iface, setIface] = useState(safeSettings.connection?.interface_name || (dev && dev.Interface) || "");
+    const [ssid, setSSID] = useState(safeSettings.wifi?.ssid || generateDefaultSSID(dev));
+    const [password, setPassword] = useState("");
+    const [securityType, setSecurityType] = useState(safeSettings.wifi_security?.key_mgmt || "wpa-psk");
+    const [band, setBand] = useState(initialBand);
+    // Normalize at mount so a Bridged AP never seeds the now-absent Automatic
+    // option (R3): an unset/Automatic channel becomes the band default.
+    const [channel, setChannel] = useState(apModeNormalizeChannel(initialMode, initialBand, safeSettings.wifi?.channel || 0));
+    const [hidden, setHidden] = useState(safeSettings.wifi?.hidden || false);
+    const [ipAddress, setIPAddress] = useState(safeSettings.ipv4?.address_data?.[0]?.address || "10.42.0.1");
+    const [prefix, setPrefix] = useState(safeSettings.ipv4?.address_data?.[0]?.prefix || 24);
+    const [dialogError, setDialogError] = useState("");
+    const [mode, setMode] = useState(initialMode);
     const isBridged = mode === AP_INTEGRATION_MODES.BRIDGED;
 
     // Validate SSID
@@ -508,6 +511,10 @@ export const WiFiAPDialog = ({ settings, connection, dev, dualMode = false }) =>
             }
         }
 
+        // Bridged always carries a fixed channel (R3), Isolated omits it when
+        // Automatic — one decision shared by every save branch below.
+        const emitChannel = apModeChannelToEmit(mode, band, channel);
+
         // Build Access Point connection settings
         const apSettings = {
             ...settings,
@@ -523,7 +530,7 @@ export const WiFiAPDialog = ({ settings, connection, dev, dualMode = false }) =>
                 ssid,
                 mode: "ap",
                 band,
-                ...(channel !== 0 && { channel }), // Only include if not auto
+                ...(emitChannel !== null && { channel: emitChannel }),
                 ...(hidden && { hidden: true }), // Only include if hidden
             },
         };
@@ -588,8 +595,8 @@ export const WiFiAPDialog = ({ settings, connection, dev, dualMode = false }) =>
                         args.push("ipv4.addresses", `${ipAddress}/${prefix}`);
                     }
 
-                    if (channel !== 0) {
-                        args.push("wifi.channel", String(channel));
+                    if (emitChannel !== null) {
+                        args.push("wifi.channel", String(emitChannel));
                     }
 
                     if (securityType !== "none" && password) {
@@ -769,9 +776,13 @@ export const WiFiAPDialog = ({ settings, connection, dev, dualMode = false }) =>
                     <Alert
                         variant="warning"
                         isInline
-                        title={_("Applying this change may briefly disconnect AP clients, and this device's address may change. Afterward, reach it by its hostname.")}
+                        title={_("Switching network mode is disruptive")}
                         style={{ marginBottom: "1rem" }}
-                    />
+                    >
+                        <p>
+                            {_("Applying this change may briefly disconnect AP clients, and this device's address may change. Afterward, reach it by its hostname.")}
+                        </p>
+                    </Alert>
                 )}
 
                 <FormGroup label={_("Frequency Band")} fieldId={idPrefix + "-band-select"}>
@@ -843,9 +854,9 @@ export const WiFiAPDialog = ({ settings, connection, dev, dualMode = false }) =>
 
                 {isBridged
                     ? (
-                        <FormGroup label={_("IP addressing")} fieldId={idPrefix + "-bridged-ip-note"}>
+                        <FormGroup label={_("IP addressing")}>
                             <HelperText>
-                                <HelperTextItem id={idPrefix + "-bridged-ip-note"}>
+                                <HelperTextItem>
                                     {_("Clients receive addresses from your upstream gateway. This device has no separate AP subnet in Bridged mode.")}
                                 </HelperTextItem>
                             </HelperText>

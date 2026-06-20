@@ -176,3 +176,19 @@ export function isApModeChannelValid(mode, channel) {
         return channel !== 0;
     return true;
 }
+
+/**
+ * The channel value to write into the saved connection, or null to omit it.
+ * Bridged always emits a concrete fixed channel (R3) — never Automatic — so the
+ * "fixed channel" invariant holds regardless of submit-time state. Isolated
+ * omits the channel when Automatic (0), letting NM pick.
+ *
+ * @param {'isolated'|'bridged'|'custom'} mode
+ * @param {string} band
+ * @param {number} channel
+ * @returns {number|null}
+ */
+export function apModeChannelToEmit(mode, band, channel) {
+    const normalized = apModeNormalizeChannel(mode, band, channel);
+    return normalized !== 0 ? normalized : null;
+}
