@@ -20,7 +20,7 @@
 import cockpit from 'cockpit';
 import React, { useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 
-import { Alert } from '@patternfly/react-core/dist/esm/components/Alert/index.js';
+import { Alert, AlertActionCloseButton } from '@patternfly/react-core/dist/esm/components/Alert/index.js';
 import { Badge } from '@patternfly/react-core/dist/esm/components/Badge/index.js';
 import { Button } from '@patternfly/react-core/dist/esm/components/Button/index.js';
 import { Card, CardBody, CardHeader, CardTitle } from '@patternfly/react-core/dist/esm/components/Card/index.js';
@@ -51,6 +51,10 @@ import {
     apModeIpv4Settings, apModeNormalizeChannel, isApModeChannelValid, apModeChannelToEmit,
     AP_CHANNELS_24, AP_CHANNELS_5_DFS_FREE,
 } from './ap-integration-mode';
+import {
+    buildEnterBridgedScript, buildRevertCommand, buildArmDeadmanCommand, buildLaunchApplyCommand,
+    apSwitchUnitNames, mapVerdictToOutcome, parseBreadcrumb, AP_SWITCH_PATHS,
+} from './ap-switch';
 
 const _ = cockpit.gettext;
 
@@ -486,6 +490,48 @@ export const WiFiAPDialog = ({ settings, connection, dev, dualMode = false }) =>
         }
     };
 
+    // Unit 6: a mode CHANGE on an existing AP is a switch orchestration, not a
+    // plain save. enter-Bridged runs detached (the switch drops this session) with
+    // the watchdog armed first; switch-back invokes the shared revert primitive.
+    // The card surfaces the outcome from the /run breadcrumb (R19).
+    const applyModeSwitch = async () => {
+        const apUuid = settings.connection?.uuid;
+        try {
+            if (mode === AP_INTEGRATION_MODES.BRIDGED) {
+                const ethMac = (await cockpit.spawn(["cat", "/sys/class/net/eth0/address"], { err: "message" })).trim();
+                const gateway = (await cockpit.spawn(
+                    ["sh", "-c", "ip route show default dev eth0 | awk '/default/{print $3; exit}'"],
+                    { err: "message" })).trim();
+                // Fail closed rather than half-switch on a malformed input: an
+                // empty uuid/MAC would abort the apply mid-sequence (eth0 already
+                // down, br0 up) for the watchdog to clean up. Empty gateway is OK
+                // (the verdict fail-opens on identity).
+                if (!apUuid || !/^([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}$/.test(ethMac)) {
+                    setDialogError(_("Cannot switch to Bridged: the AP connection or eth0 MAC could not be read."));
+                    return;
+                }
+                const script = buildEnterBridgedScript({ apUuid, ethMac, gateway, channel: apModeChannelToEmit(mode, band, channel) });
+                const tag = String(Date.now());
+                // Arm the deadman first so a stranded switch self-reverts, then
+                // apply detached so it finishes across the session drop. If the
+                // apply fails to launch, disarm the deadman so it can't fire a
+                // verdict against a switch that never started.
+                await cockpit.spawn(buildArmDeadmanCommand({ tag }), { superuser: "require", err: "message" });
+                try {
+                    await cockpit.spawn(buildLaunchApplyCommand(script, tag), { superuser: "require", err: "message" });
+                } catch (ex) {
+                    await cockpit.spawn(["systemctl", "stop", `${apSwitchUnitNames(tag).deadman}.timer`], { superuser: "try" }).catch(() => {});
+                    throw ex;
+                }
+            } else {
+                await cockpit.spawn(buildRevertCommand(), { superuser: "require", err: "message" });
+            }
+            Dialogs.close();
+        } catch (ex) {
+            setDialogError(typeof ex === 'string' ? ex : ex.message);
+        }
+    };
+
     const onSubmit = async (ev) => {
         if (ev) {
             ev.preventDefault();
@@ -496,6 +542,11 @@ export const WiFiAPDialog = ({ settings, connection, dev, dualMode = false }) =>
             const channelMessage = !channelValid ? _("Select a fixed channel for Bridged mode") : "";
             setDialogError(ssidValidation.message || passwordValidation.message ||
                 (isBridged ? "" : ipValidation.message) || channelMessage);
+            return;
+        }
+
+        if (connection && mode !== currentMode) {
+            await applyModeSwitch();
             return;
         }
 
@@ -747,8 +798,12 @@ export const WiFiAPDialog = ({ settings, connection, dev, dualMode = false }) =>
                     </Alert>
                 )}
 
-                <FormGroup label={_("Network mode")} fieldId={idPrefix + "-mode-select"}>
-                    <select
+                {/* Switching modes enslaves the existing AP onto br0, so it is an
+                    edit-only action: on create the AP does not exist yet to switch,
+                    and "Enable AP" brings up the Isolated base. */}
+                {!isCreateDialog && (
+                    <FormGroup label={_("Network mode")} fieldId={idPrefix + "-mode-select"}>
+                        <select
                         id={idPrefix + "-mode-select"}
                         className="pf-v6-c-form-control"
                         value={mode}
@@ -757,20 +812,21 @@ export const WiFiAPDialog = ({ settings, connection, dev, dualMode = false }) =>
                             setMode(newMode);
                             setChannel(apModeNormalizeChannel(newMode, band, channel));
                         }}
-                    >
-                        <option value={AP_INTEGRATION_MODES.ISOLATED}>{apIntegrationModeLabel(AP_INTEGRATION_MODES.ISOLATED)}</option>
-                        <option value={AP_INTEGRATION_MODES.BRIDGED}>{apIntegrationModeLabel(AP_INTEGRATION_MODES.BRIDGED)}</option>
-                    </select>
-                    <FormHelperText>
-                        <HelperText>
-                            <HelperTextItem>
-                                {isBridged
-                                    ? _("The AP joins your LAN through the wired connection.")
-                                    : _("The AP runs its own isolated network with local DHCP.")}
-                            </HelperTextItem>
-                        </HelperText>
-                    </FormHelperText>
-                </FormGroup>
+                        >
+                            <option value={AP_INTEGRATION_MODES.ISOLATED}>{apIntegrationModeLabel(AP_INTEGRATION_MODES.ISOLATED)}</option>
+                            <option value={AP_INTEGRATION_MODES.BRIDGED}>{apIntegrationModeLabel(AP_INTEGRATION_MODES.BRIDGED)}</option>
+                        </select>
+                        <FormHelperText>
+                            <HelperText>
+                                <HelperTextItem>
+                                    {isBridged
+                                        ? _("The AP joins your LAN through the wired connection.")
+                                        : _("The AP runs its own isolated network with local DHCP.")}
+                                </HelperTextItem>
+                            </HelperText>
+                        </FormHelperText>
+                    </FormGroup>
+                )}
 
                 {mode !== currentMode && (
                     <Alert
@@ -1269,7 +1325,7 @@ const WiFiSavedNetworks = ({ dev, model }) => {
 };
 
 // Disable AP Confirmation Dialog
-const DisableAPConfirmDialog = ({ ssid, onConfirm, onCancel }) => {
+const DisableAPConfirmDialog = ({ ssid, bridged, onConfirm, onCancel }) => {
     return (
         <Modal
             id="disable-ap-confirm-dialog"
@@ -1284,6 +1340,11 @@ const DisableAPConfirmDialog = ({ ssid, onConfirm, onCancel }) => {
                     <p>
                         {cockpit.format(_("Disabling the access point \"$0\" will disconnect all currently connected clients."), ssid)}
                     </p>
+                    {bridged && (
+                        <p>
+                            {_("Disabling will also remove the LAN bridge and return the wired connection to standalone DHCP.")}
+                        </p>
+                    )}
                 </Alert>
             </ModalBody>
             <ModalFooter>
@@ -1393,11 +1454,69 @@ const WiFiAPClientList = ({ iface }) => {
     );
 };
 
+// R19 outcome Alert copy, keyed on the verdict→phase mapping (ap-switch.js).
+function apSwitchOutcomeTitle(phase) {
+    switch (phase) {
+    case "in-flight":
+        return _("Applying network mode change — verifying connectivity…");
+    case "success-bridged":
+        return _("Bridged mode active. Reach this device by hostname — its address may have changed.");
+    case "success-isolated":
+        return _("Isolated mode active. The AP is on its own network at 10.42.0.1.");
+    case "auto-revert":
+        return _("Reverted to Isolated because upstream connectivity was not established.");
+    case "hard-failure":
+        return _("Recovery forced this device back to Isolated. It should be reachable at 10.42.0.1 — please verify from the command line.");
+    case "stranded":
+        return _("Automatic recovery failed — the device may be unreachable over the network. Connect a console (or power-cycle) and check from the command line.");
+    case "in-flight-timeout":
+        return _("Network mode change is taking longer than expected — connectivity not yet confirmed. Verify from the command line.");
+    default:
+        return "";
+    }
+}
+
 // WiFi AP Configuration Status Component
 export const WiFiAPConfig = ({ dev, connection, activeConnection, apActive, canEnableAP, onEnableAP, deviceUnavailable, isAdminGated }) => {
     const model = useContext(ModelContext);
     const Dialogs = useDialogs();
     const [error, setError] = useState(null);
+    // R19: the AP mode-switch outcome, driven by the device-side watchdog's
+    // /run breadcrumb (written by the switch apply, the deadman verdict, and the
+    // revert primitive). The breadcrumb is the single source of truth shared by
+    // the apply, the watchdog, and this card.
+    const [switchOutcome, setSwitchOutcome] = useState(null);
+    const [switchDismissed, setSwitchDismissed] = useState(false);
+    const [inFlightTimedOut, setInFlightTimedOut] = useState(false);
+
+    useEffect(() => {
+        const file = cockpit.file(AP_SWITCH_PATHS.breadcrumb);
+        file.watch(content => {
+            if (!content) { setSwitchOutcome(null); return }
+            const crumb = parseBreadcrumb(content);
+            const outcome = mapVerdictToOutcome(crumb.verdict, crumb.reason);
+            if (outcome.phase === "idle") { setSwitchOutcome(null); return }
+            setSwitchOutcome(outcome);
+            if (outcome.phase !== "in-flight") setSwitchDismissed(false);
+            setInFlightTimedOut(false);
+        });
+        return () => file.close();
+    }, []);
+
+    // Client-side backstop: if the device-side deadman never writes a terminal
+    // verdict, don't leave the card "verifying connectivity…" forever.
+    useEffect(() => {
+        if (switchOutcome?.phase !== "in-flight") return undefined;
+        const id = window.setTimeout(() => setInFlightTimedOut(true), 150000);
+        return () => window.clearTimeout(id);
+    }, [switchOutcome?.phase]);
+
+    // Dismiss a terminal outcome: clear the breadcrumb so it doesn't re-surface
+    // on a remount, and hide it immediately.
+    const dismissSwitchOutcome = () => {
+        setSwitchDismissed(true);
+        cockpit.file(AP_SWITCH_PATHS.breadcrumb, { superuser: "try" }).replace(null).catch(() => {});
+    };
 
     const settings = connection?.Settings;
     const ssid = settings?.wifi?.ssid || _("Unknown");
@@ -1422,8 +1541,18 @@ export const WiFiAPConfig = ({ dev, connection, activeConnection, apActive, canE
 
         const doDisable = async () => {
             try {
-                // Persist the disabled state so the AP doesn't restart on reboot
                 const uuid = settings?.connection?.uuid;
+                if (integrationMode === AP_INTEGRATION_MODES.BRIDGED) {
+                    // Disable-while-Bridged is the shared revert primitive minus
+                    // re-activating the AP: tear down br0, return eth0 to standalone
+                    // DHCP, and leave the AP down (the watchdog verifies eth0).
+                    await cockpit.spawn(buildRevertCommand({ disable: true }), { superuser: "require", err: "message" });
+                    if (uuid)
+                        await cockpit.spawn(["nmcli", "connection", "modify", uuid, "connection.autoconnect", "no"], { superuser: "require", err: "message" });
+                    Dialogs.close();
+                    return;
+                }
+                // Persist the disabled state so the AP doesn't restart on reboot
                 if (uuid) {
                     await cockpit.spawn(
                         ["nmcli", "connection", "modify", uuid, "connection.autoconnect", "no"],
@@ -1447,6 +1576,7 @@ export const WiFiAPConfig = ({ dev, connection, activeConnection, apActive, canE
         Dialogs.show(
             <DisableAPConfirmDialog
                 ssid={ssid}
+                bridged={integrationMode === AP_INTEGRATION_MODES.BRIDGED}
                 onConfirm={doDisable}
                 onCancel={() => Dialogs.close()}
             />
@@ -1524,6 +1654,27 @@ export const WiFiAPConfig = ({ dev, connection, activeConnection, apActive, canE
                         variant="danger"
                         isInline
                         title={error}
+                        style={{ marginBottom: "1rem" }}
+                    />
+                )}
+                {/* R19: in-flight verifying state. Not dismissible while live;
+                    demotes to a warning if no terminal verdict arrives in time. */}
+                {switchOutcome?.phase === "in-flight" && (
+                    <Alert
+                        variant={inFlightTimedOut ? "warning" : "info"}
+                        isInline
+                        title={apSwitchOutcomeTitle(inFlightTimedOut ? "in-flight-timeout" : "in-flight")}
+                        style={{ marginBottom: "1rem" }}
+                    />
+                )}
+                {/* R19: distinct success / auto-revert / hard-failure / stranded outcomes. */}
+                {switchOutcome && switchOutcome.phase !== "in-flight" && !switchDismissed && (
+                    <Alert
+                        variant={switchOutcome.variant}
+                        isInline
+                        isLiveRegion
+                        actionClose={<AlertActionCloseButton onClose={dismissSwitchOutcome} />}
+                        title={apSwitchOutcomeTitle(switchOutcome.phase)}
                         style={{ marginBottom: "1rem" }}
                     />
                 )}
