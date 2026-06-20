@@ -82,6 +82,15 @@ QUnit.test("uses set -e so a partial switch stops for the watchdog to revert", f
     assert.ok(buildEnterBridgedScript(SAMPLE).startsWith("set -e"), "set -e first");
 });
 
+QUnit.test("shell-escapes interpolated values — a quote-breakout payload stays contained", function(assert) {
+    const s = buildEnterBridgedScript({ ...SAMPLE, gateway: "x'; touch /pwned #" });
+    // The canonical single-quote escape (' -> '\'') keeps the whole payload as a
+    // single-quoted literal, so "; touch" can never become a command.
+    assert.ok(s.includes("'x'\\''; touch /pwned #'"), "payload escaped into a single-quoted literal");
+    // It must NOT appear backslash-escaped (the vulnerable alternative) or raw.
+    assert.notOk(s.includes("x\\'; touch"), "not naively backslash-escaped");
+});
+
 QUnit.module("buildRevertCommand");
 
 QUnit.test("switch-back invokes the shared watchdog revert", function(assert) {
@@ -96,16 +105,18 @@ QUnit.test("disable-while-Bridged leaves the AP down via NO_AP_UP", function(ass
 QUnit.module("buildArmDeadmanCommand / buildLaunchApplyCommand");
 
 QUnit.test("deadman is a detached systemd-run firing the watchdog switch verdict", function(assert) {
-    const argv = buildArmDeadmanCommand({ window: 45 });
+    const argv = buildArmDeadmanCommand({ tag: "t1", window: 45 });
     assert.strictEqual(argv[0], "systemd-run");
     assert.ok(argv.includes("--on-active=45"), "window set");
     assert.ok(argv.includes("--collect"), "detached/collected");
+    assert.ok(argv.includes("--unit=ap-bridge-switch-deadman-t1"), "per-attempt unit name");
     assert.deepEqual(argv.slice(-2), [AP_SWITCH_PATHS.watchdog, "switch"], "fires watchdog switch");
 });
 
-QUnit.test("apply launches detached via systemd-run bash -c", function(assert) {
-    const argv = buildLaunchApplyCommand("set -e\nnmcli ...");
+QUnit.test("apply launches detached via systemd-run bash -c with a per-attempt unit", function(assert) {
+    const argv = buildLaunchApplyCommand("set -e\nnmcli ...", "t1");
     assert.strictEqual(argv[0], "systemd-run");
+    assert.ok(argv.includes("--unit=ap-bridge-switch-apply-t1"), "per-attempt unit name");
     assert.deepEqual(argv.slice(-3, -1), ["/bin/bash", "-c"]);
     assert.strictEqual(argv[argv.length - 1], "set -e\nnmcli ...");
 });
@@ -116,7 +127,7 @@ QUnit.test("maps each verdict to its R19 phase/variant", function(assert) {
     assert.deepEqual(mapVerdictToOutcome("switching"), { phase: "in-flight", variant: "info" });
     assert.deepEqual(mapVerdictToOutcome("healthy"), { phase: "success-bridged", variant: "success" });
     assert.deepEqual(mapVerdictToOutcome("recovered"), { phase: "hard-failure", variant: "danger" });
-    assert.deepEqual(mapVerdictToOutcome("stranded"), { phase: "hard-failure", variant: "danger" });
+    assert.deepEqual(mapVerdictToOutcome("stranded"), { phase: "stranded", variant: "danger" });
     assert.deepEqual(mapVerdictToOutcome("skipped"), { phase: "idle", variant: null });
 });
 

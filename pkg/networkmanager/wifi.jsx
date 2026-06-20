@@ -53,7 +53,7 @@ import {
 } from './ap-integration-mode';
 import {
     buildEnterBridgedScript, buildRevertCommand, buildArmDeadmanCommand, buildLaunchApplyCommand,
-    mapVerdictToOutcome, parseBreadcrumb, AP_SWITCH_PATHS,
+    apSwitchUnitNames, mapVerdictToOutcome, parseBreadcrumb, AP_SWITCH_PATHS,
 } from './ap-switch';
 
 const _ = cockpit.gettext;
@@ -502,11 +502,27 @@ export const WiFiAPDialog = ({ settings, connection, dev, dualMode = false }) =>
                 const gateway = (await cockpit.spawn(
                     ["sh", "-c", "ip route show default dev eth0 | awk '/default/{print $3; exit}'"],
                     { err: "message" })).trim();
-                const script = buildEnterBridgedScript({ apUuid, ethMac, gateway, channel });
+                // Fail closed rather than half-switch on a malformed input: an
+                // empty uuid/MAC would abort the apply mid-sequence (eth0 already
+                // down, br0 up) for the watchdog to clean up. Empty gateway is OK
+                // (the verdict fail-opens on identity).
+                if (!apUuid || !/^([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}$/.test(ethMac)) {
+                    setDialogError(_("Cannot switch to Bridged: the AP connection or eth0 MAC could not be read."));
+                    return;
+                }
+                const script = buildEnterBridgedScript({ apUuid, ethMac, gateway, channel: apModeChannelToEmit(mode, band, channel) });
+                const tag = String(Date.now());
                 // Arm the deadman first so a stranded switch self-reverts, then
-                // apply detached so it finishes across the session drop.
-                await cockpit.spawn(buildArmDeadmanCommand({}), { superuser: "require", err: "message" });
-                await cockpit.spawn(buildLaunchApplyCommand(script), { superuser: "require", err: "message" });
+                // apply detached so it finishes across the session drop. If the
+                // apply fails to launch, disarm the deadman so it can't fire a
+                // verdict against a switch that never started.
+                await cockpit.spawn(buildArmDeadmanCommand({ tag }), { superuser: "require", err: "message" });
+                try {
+                    await cockpit.spawn(buildLaunchApplyCommand(script, tag), { superuser: "require", err: "message" });
+                } catch (ex) {
+                    await cockpit.spawn(["systemctl", "stop", `${apSwitchUnitNames(tag).deadman}.timer`], { superuser: "try" }).catch(() => {});
+                    throw ex;
+                }
             } else {
                 await cockpit.spawn(buildRevertCommand(), { superuser: "require", err: "message" });
             }
@@ -1451,6 +1467,10 @@ function apSwitchOutcomeTitle(phase) {
         return _("Reverted to Isolated because upstream connectivity was not established.");
     case "hard-failure":
         return _("Recovery forced this device back to Isolated. It should be reachable at 10.42.0.1 — please verify from the command line.");
+    case "stranded":
+        return _("Automatic recovery failed — the device may be unreachable over the network. Connect a console (or power-cycle) and check from the command line.");
+    case "in-flight-timeout":
+        return _("Network mode change is taking longer than expected — connectivity not yet confirmed. Verify from the command line.");
     default:
         return "";
     }
@@ -1467,6 +1487,7 @@ export const WiFiAPConfig = ({ dev, connection, activeConnection, apActive, canE
     // the apply, the watchdog, and this card.
     const [switchOutcome, setSwitchOutcome] = useState(null);
     const [switchDismissed, setSwitchDismissed] = useState(false);
+    const [inFlightTimedOut, setInFlightTimedOut] = useState(false);
 
     useEffect(() => {
         const file = cockpit.file(AP_SWITCH_PATHS.breadcrumb);
@@ -1477,9 +1498,25 @@ export const WiFiAPConfig = ({ dev, connection, activeConnection, apActive, canE
             if (outcome.phase === "idle") { setSwitchOutcome(null); return }
             setSwitchOutcome(outcome);
             if (outcome.phase !== "in-flight") setSwitchDismissed(false);
+            setInFlightTimedOut(false);
         });
         return () => file.close();
     }, []);
+
+    // Client-side backstop: if the device-side deadman never writes a terminal
+    // verdict, don't leave the card "verifying connectivity…" forever.
+    useEffect(() => {
+        if (switchOutcome?.phase !== "in-flight") return undefined;
+        const id = window.setTimeout(() => setInFlightTimedOut(true), 150000);
+        return () => window.clearTimeout(id);
+    }, [switchOutcome?.phase]);
+
+    // Dismiss a terminal outcome: clear the breadcrumb so it doesn't re-surface
+    // on a remount, and hide it immediately.
+    const dismissSwitchOutcome = () => {
+        setSwitchDismissed(true);
+        cockpit.file(AP_SWITCH_PATHS.breadcrumb, { superuser: "try" }).replace(null).catch(() => {});
+    };
 
     const settings = connection?.Settings;
     const ssid = settings?.wifi?.ssid || _("Unknown");
@@ -1511,7 +1548,7 @@ export const WiFiAPConfig = ({ dev, connection, activeConnection, apActive, canE
                     // DHCP, and leave the AP down (the watchdog verifies eth0).
                     await cockpit.spawn(buildRevertCommand({ disable: true }), { superuser: "require", err: "message" });
                     if (uuid)
-                        await cockpit.spawn(["nmcli", "connection", "modify", uuid, "connection.autoconnect", "no"], { superuser: "try", err: "message" });
+                        await cockpit.spawn(["nmcli", "connection", "modify", uuid, "connection.autoconnect", "no"], { superuser: "require", err: "message" });
                     Dialogs.close();
                     return;
                 }
@@ -1620,22 +1657,23 @@ export const WiFiAPConfig = ({ dev, connection, activeConnection, apActive, canE
                         style={{ marginBottom: "1rem" }}
                     />
                 )}
-                {/* R19: in-flight verifying state (not dismissible — transient). */}
+                {/* R19: in-flight verifying state. Not dismissible while live;
+                    demotes to a warning if no terminal verdict arrives in time. */}
                 {switchOutcome?.phase === "in-flight" && (
                     <Alert
-                        variant="info"
+                        variant={inFlightTimedOut ? "warning" : "info"}
                         isInline
-                        title={apSwitchOutcomeTitle("in-flight")}
+                        title={apSwitchOutcomeTitle(inFlightTimedOut ? "in-flight-timeout" : "in-flight")}
                         style={{ marginBottom: "1rem" }}
                     />
                 )}
-                {/* R19: distinct success / auto-revert / hard-failure outcomes. */}
+                {/* R19: distinct success / auto-revert / hard-failure / stranded outcomes. */}
                 {switchOutcome && switchOutcome.phase !== "in-flight" && !switchDismissed && (
                     <Alert
                         variant={switchOutcome.variant}
                         isInline
                         isLiveRegion
-                        actionClose={<AlertActionCloseButton onClose={() => setSwitchDismissed(true)} />}
+                        actionClose={<AlertActionCloseButton onClose={dismissSwitchOutcome} />}
                         title={apSwitchOutcomeTitle(switchOutcome.phase)}
                         style={{ marginBottom: "1rem" }}
                     />

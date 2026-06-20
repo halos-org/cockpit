@@ -87,7 +87,10 @@ export function buildEnterBridgedScript({ apUuid, ethMac, gateway, channel }) {
         `${has(PORT)} || nmcli connection add type ethernet con-name ${PORT} ifname ${UP} ` +
             `master ${BR} connection.autoconnect yes`,
         // Down the active eth0 connection BEFORE br0 goes live (no dual-MAC).
-        `ETH_ACTIVE=$(nmcli -t -f NAME,DEVICE connection show --active | awk -F: '$2=="${UP}"{print $1; exit}')`,
+        // Query the device's connection name directly — colon-safe (nmcli -g
+        // emits the raw single value, vs -f NAME,DEVICE where awk -F: would
+        // mis-split a connection name containing a colon).
+        `ETH_ACTIVE=$(nmcli -t -g GENERAL.CONNECTION device show ${UP})`,
         `if [ -n "$ETH_ACTIVE" ] && [ "$ETH_ACTIVE" != ${shq(PORT)} ]; then ` +
             `nmcli connection modify "$ETH_ACTIVE" connection.autoconnect no; ` +
             `nmcli connection down "$ETH_ACTIVE"; fi`,
@@ -114,16 +117,27 @@ export function buildRevertCommand({ disable = false } = {}) {
     return disable ? ["env", "NO_AP_UP=1", ...cmd] : cmd;
 }
 
+// Per-attempt transient unit names. Unique per switch so a rapid re-attempt
+// never collides with a prior, not-yet-collected unit; the watchdog's own flock
+// serializes the actual verdict/revert.
+export function apSwitchUnitNames(tag) {
+    return {
+        deadman: `ap-bridge-switch-deadman-${tag}`,
+        apply: `ap-bridge-switch-apply-${tag}`,
+    };
+}
+
 /**
  * Arm the transient deadman that verifies the switch and reverts if it failed.
  * Detached + PID-1-owned so it survives the session drop the switch causes.
- * @param {object} [o]
+ * @param {object} o
+ * @param {string} o.tag - unique per-attempt tag (see apSwitchUnitNames)
  * @param {number} [o.window] - seconds until the verdict fires
  * @returns {string[]} argv for cockpit.spawn
  */
-export function buildArmDeadmanCommand({ window = SWITCH_DEADMAN_WINDOW } = {}) {
+export function buildArmDeadmanCommand({ tag, window = SWITCH_DEADMAN_WINDOW }) {
     return [
-        "systemd-run", "--collect", "--unit=ap-bridge-switch-deadman",
+        "systemd-run", "--collect", `--unit=${apSwitchUnitNames(tag).deadman}`,
         `--on-active=${window}`,
         AP_SWITCH_PATHS.watchdog, "switch",
     ];
@@ -133,11 +147,12 @@ export function buildArmDeadmanCommand({ window = SWITCH_DEADMAN_WINDOW } = {}) 
  * Launch the enter-Bridged apply detached so it completes across the session
  * drop. The deadman (armed separately, first) is the safety net.
  * @param {string} script - from buildEnterBridgedScript
+ * @param {string} tag - unique per-attempt tag (see apSwitchUnitNames)
  * @returns {string[]} argv for cockpit.spawn
  */
-export function buildLaunchApplyCommand(script) {
+export function buildLaunchApplyCommand(script, tag) {
     return [
-        "systemd-run", "--collect", "--unit=ap-bridge-switch-apply",
+        "systemd-run", "--collect", `--unit=${apSwitchUnitNames(tag).apply}`,
         "/bin/bash", "-c", script,
     ];
 }
@@ -165,8 +180,11 @@ export function mapVerdictToOutcome(verdict, reason) {
             ? { phase: "success-isolated", variant: "success" }
             : { phase: "auto-revert", variant: "warning" };
     case "recovered":
-    case "stranded":
         return { phase: "hard-failure", variant: "danger" };
+    case "stranded":
+        // The automatic recovery itself failed: NOT guaranteed at 10.42.0.1, so
+        // this gets its own, more defensive copy than "recovered".
+        return { phase: "stranded", variant: "danger" };
     default:
         return { phase: "idle", variant: null };
     }
