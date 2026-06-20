@@ -26,6 +26,7 @@
 
 import QUnit from "qunit-tests";
 import { parseSecurityFlags, ConnectionState } from "./wifi-hooks";
+import { classifyApIntegrationMode, isManagedApMode, AP_INTEGRATION_MODES } from "./ap-integration-mode";
 
 // ============================================================================
 // Tests for parseSecurityFlags
@@ -579,6 +580,101 @@ QUnit.test("sorts by signal strength descending", function(assert) {
     assert.strictEqual(sorted[0].ssid, "Strong");
     assert.strictEqual(sorted[1].ssid, "Medium");
     assert.strictEqual(sorted[2].ssid, "Weak");
+});
+
+// ============================================================================
+// Tests for classifyApIntegrationMode
+// ============================================================================
+
+QUnit.module("classifyApIntegrationMode");
+
+// Fixture builders mirror the parsed NM model shape (interfaces.js settings_from_nm
+// plus the resolved .Groups / .Members object graph).
+function apMember() {
+    return { Settings: { connection: { type: "802-11-wireless", interface_name: "wlan0ap" }, wifi: { mode: "ap" } } };
+}
+function ethMember(ifname) {
+    return { Settings: { connection: { type: "802-3-ethernet", interface_name: ifname } } };
+}
+function br0Master(members) {
+    return {
+        Settings: { connection: { interface_name: "br0" }, bridge: { interface_name: "br0" } },
+        Members: members,
+    };
+}
+function isolatedAP(method) {
+    return { Settings: { connection: { type: "802-11-wireless", interface_name: "wlan0ap" }, wifi: { mode: "ap" }, ipv4: { method } } };
+}
+function bridgedAP(groups) {
+    return {
+        Settings: { connection: { type: "802-11-wireless", interface_name: "wlan0ap", member_type: "bridge", group: "uuid-br0" }, wifi: { mode: "ap" } },
+        Groups: groups,
+    };
+}
+
+QUnit.test("Isolated: shared method, no master", function(assert) {
+    assert.strictEqual(classifyApIntegrationMode(isolatedAP("shared")), AP_INTEGRATION_MODES.ISOLATED);
+});
+
+QUnit.test("Isolated: customized shared subnet still Isolated (IP editable, R2)", function(assert) {
+    const ap = isolatedAP("shared");
+    ap.Settings.ipv4.address_data = [{ address: "10.99.0.1", prefix: 24 }];
+    assert.strictEqual(classifyApIntegrationMode(ap), AP_INTEGRATION_MODES.ISOLATED);
+});
+
+QUnit.test("Bridged: br0 master with exactly eth0 + wlan0ap ports", function(assert) {
+    const ap = bridgedAP([br0Master([apMember(), ethMember("eth0")])]);
+    assert.strictEqual(classifyApIntegrationMode(ap), AP_INTEGRATION_MODES.BRIDGED);
+});
+
+QUnit.test("Bridged: mid-transition thin Members (AP not yet listed)", function(assert) {
+    const ap = bridgedAP([br0Master([ethMember("eth0")])]);
+    assert.strictEqual(classifyApIntegrationMode(ap), AP_INTEGRATION_MODES.BRIDGED);
+});
+
+QUnit.test("Bridged: unresolved master but group names br0 directly", function(assert) {
+    const ap = bridgedAP([]);
+    ap.Settings.connection.group = "br0";
+    assert.strictEqual(classifyApIntegrationMode(ap), AP_INTEGRATION_MODES.BRIDGED);
+});
+
+QUnit.test("Custom: bridge has an extra foreign port", function(assert) {
+    const ap = bridgedAP([br0Master([apMember(), ethMember("eth0"), ethMember("eth1")])]);
+    assert.strictEqual(classifyApIntegrationMode(ap), AP_INTEGRATION_MODES.CUSTOM);
+});
+
+QUnit.test("Custom: master bridge is not br0", function(assert) {
+    const notBr0 = { Settings: { connection: { interface_name: "br1" }, bridge: { interface_name: "br1" } }, Members: [] };
+    const ap = bridgedAP([notBr0]);
+    ap.Settings.connection.group = "uuid-br1";
+    assert.strictEqual(classifyApIntegrationMode(ap), AP_INTEGRATION_MODES.CUSTOM);
+});
+
+QUnit.test("Custom: static/manual AP IP, no master", function(assert) {
+    assert.strictEqual(classifyApIntegrationMode(isolatedAP("manual")), AP_INTEGRATION_MODES.CUSTOM);
+});
+
+QUnit.test("Custom: auto method, no master", function(assert) {
+    assert.strictEqual(classifyApIntegrationMode(isolatedAP("auto")), AP_INTEGRATION_MODES.CUSTOM);
+});
+
+QUnit.test("Custom: member of a non-bridge master (bond)", function(assert) {
+    const ap = {
+        Settings: { connection: { type: "802-11-wireless", member_type: "bond", group: "bond0" }, wifi: { mode: "ap" } },
+        Groups: [],
+    };
+    assert.strictEqual(classifyApIntegrationMode(ap), AP_INTEGRATION_MODES.CUSTOM);
+});
+
+QUnit.test("Custom: missing/empty settings is the safe sink", function(assert) {
+    assert.strictEqual(classifyApIntegrationMode(null), AP_INTEGRATION_MODES.CUSTOM);
+    assert.strictEqual(classifyApIntegrationMode({}), AP_INTEGRATION_MODES.CUSTOM);
+});
+
+QUnit.test("isManagedApMode: Isolated and Bridged are editable, Custom is not", function(assert) {
+    assert.strictEqual(isManagedApMode(AP_INTEGRATION_MODES.ISOLATED), true);
+    assert.strictEqual(isManagedApMode(AP_INTEGRATION_MODES.BRIDGED), true);
+    assert.strictEqual(isManagedApMode(AP_INTEGRATION_MODES.CUSTOM), false);
 });
 
 // ============================================================================
