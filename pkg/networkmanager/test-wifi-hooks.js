@@ -26,7 +26,10 @@
 
 import QUnit from "qunit-tests";
 import { parseSecurityFlags, ConnectionState, apIntegrationModeLabel, apIpRangeText } from "./wifi-hooks";
-import { classifyApIntegrationMode, isManagedApMode, AP_INTEGRATION_MODES } from "./ap-integration-mode";
+import {
+    classifyApIntegrationMode, isManagedApMode, AP_INTEGRATION_MODES,
+    apModeIpv4Settings, apModeNormalizeChannel, isApModeChannelValid, apModeChannelToEmit,
+} from "./ap-integration-mode";
 
 // ============================================================================
 // Tests for parseSecurityFlags
@@ -733,6 +736,103 @@ QUnit.test("Unknown mode degrades to the no-10.42 Custom text", function(assert)
     const text = apIpRangeText(undefined, undefined);
     assert.strictEqual(text, "Externally configured");
     assert.strictEqual(text.includes("10.42"), false);
+});
+
+// ============================================================================
+// Tests for apModeIpv4Settings (dialog mode-aware ipv4 emission, R6/R7)
+// ============================================================================
+
+QUnit.module("apModeIpv4Settings");
+
+QUnit.test("Isolated emits shared method + address (prefix coerced to string)", function(assert) {
+    assert.deepEqual(
+        apModeIpv4Settings(AP_INTEGRATION_MODES.ISOLATED, "10.42.0.1", 24),
+        { method: "shared", address_data: [{ address: "10.42.0.1", prefix: "24" }] });
+});
+
+QUnit.test("Bridged emits no ipv4 (the bridge owns addressing)", function(assert) {
+    assert.strictEqual(apModeIpv4Settings(AP_INTEGRATION_MODES.BRIDGED, "10.42.0.1", 24), null);
+});
+
+QUnit.test("Custom/unknown emits no ipv4", function(assert) {
+    assert.strictEqual(apModeIpv4Settings(AP_INTEGRATION_MODES.CUSTOM, "10.42.0.1", 24), null);
+    assert.strictEqual(apModeIpv4Settings(undefined, "10.42.0.1", 24), null);
+});
+
+QUnit.test("Isolated accepts a string prefix unchanged", function(assert) {
+    assert.deepEqual(
+        apModeIpv4Settings(AP_INTEGRATION_MODES.ISOLATED, "10.42.0.1", "24"),
+        { method: "shared", address_data: [{ address: "10.42.0.1", prefix: "24" }] });
+});
+
+// ============================================================================
+// Tests for apModeNormalizeChannel (R3 fixed channel in Bridged)
+// ============================================================================
+
+QUnit.module("apModeNormalizeChannel");
+
+QUnit.test("Isolated keeps Automatic (0) and any selection", function(assert) {
+    assert.strictEqual(apModeNormalizeChannel(AP_INTEGRATION_MODES.ISOLATED, "bg", 0), 0);
+    assert.strictEqual(apModeNormalizeChannel(AP_INTEGRATION_MODES.ISOLATED, "bg", 11), 11);
+});
+
+QUnit.test("Bridged 2.4 GHz with Automatic defaults to channel 6", function(assert) {
+    assert.strictEqual(apModeNormalizeChannel(AP_INTEGRATION_MODES.BRIDGED, "bg", 0), 6);
+});
+
+QUnit.test("Bridged 5 GHz with Automatic defaults to channel 36", function(assert) {
+    assert.strictEqual(apModeNormalizeChannel(AP_INTEGRATION_MODES.BRIDGED, "a", 0), 36);
+});
+
+QUnit.test("Bridged keeps a channel valid for the band", function(assert) {
+    assert.strictEqual(apModeNormalizeChannel(AP_INTEGRATION_MODES.BRIDGED, "bg", 11), 11);
+    assert.strictEqual(apModeNormalizeChannel(AP_INTEGRATION_MODES.BRIDGED, "a", 149), 149);
+});
+
+QUnit.test("Bridged resets a channel invalid for the band to that band's default", function(assert) {
+    assert.strictEqual(apModeNormalizeChannel(AP_INTEGRATION_MODES.BRIDGED, "a", 6), 36);
+    assert.strictEqual(apModeNormalizeChannel(AP_INTEGRATION_MODES.BRIDGED, "bg", 36), 6);
+});
+
+QUnit.test("Bridged treats an unknown band as 2.4 GHz (defaults to ch 6)", function(assert) {
+    assert.strictEqual(apModeNormalizeChannel(AP_INTEGRATION_MODES.BRIDGED, undefined, 0), 6);
+});
+
+// ============================================================================
+// Tests for isApModeChannelValid (submit gate, R3)
+// ============================================================================
+
+QUnit.module("isApModeChannelValid");
+
+QUnit.test("Bridged rejects Automatic (0), accepts a fixed channel", function(assert) {
+    assert.strictEqual(isApModeChannelValid(AP_INTEGRATION_MODES.BRIDGED, 0), false);
+    assert.strictEqual(isApModeChannelValid(AP_INTEGRATION_MODES.BRIDGED, 6), true);
+});
+
+QUnit.test("Isolated accepts Automatic (0)", function(assert) {
+    assert.strictEqual(isApModeChannelValid(AP_INTEGRATION_MODES.ISOLATED, 0), true);
+});
+
+QUnit.test("Custom/unknown mode accepts Automatic (only Bridged is constrained)", function(assert) {
+    assert.strictEqual(isApModeChannelValid(AP_INTEGRATION_MODES.CUSTOM, 0), true);
+    assert.strictEqual(isApModeChannelValid(undefined, 0), true);
+});
+
+// ============================================================================
+// Tests for apModeChannelToEmit (what the saved connection carries, R3)
+// ============================================================================
+
+QUnit.module("apModeChannelToEmit");
+
+QUnit.test("Isolated omits the channel when Automatic, keeps a fixed pick", function(assert) {
+    assert.strictEqual(apModeChannelToEmit(AP_INTEGRATION_MODES.ISOLATED, "bg", 0), null);
+    assert.strictEqual(apModeChannelToEmit(AP_INTEGRATION_MODES.ISOLATED, "bg", 11), 11);
+});
+
+QUnit.test("Bridged always emits a concrete channel, never null — even from Automatic", function(assert) {
+    assert.strictEqual(apModeChannelToEmit(AP_INTEGRATION_MODES.BRIDGED, "bg", 0), 6);
+    assert.strictEqual(apModeChannelToEmit(AP_INTEGRATION_MODES.BRIDGED, "a", 0), 36);
+    assert.strictEqual(apModeChannelToEmit(AP_INTEGRATION_MODES.BRIDGED, "bg", 11), 11);
 });
 
 // ============================================================================

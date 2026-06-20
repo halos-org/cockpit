@@ -46,7 +46,11 @@ import { decode_nm_property } from './utils';
 import { isAdminRequired, useAdminPermission } from './wifi-admin-gating';
 import { AdminGatedButton } from './wifi-admin-gated-button';
 import { apIntegrationModeLabel, apIpRangeText } from './wifi-hooks';
-import { classifyApIntegrationMode, isManagedApMode } from './ap-integration-mode';
+import {
+    classifyApIntegrationMode, isManagedApMode, AP_INTEGRATION_MODES,
+    apModeIpv4Settings, apModeNormalizeChannel, isApModeChannelValid, apModeChannelToEmit,
+    AP_CHANNELS_24, AP_CHANNELS_5_DFS_FREE,
+} from './ap-integration-mode';
 
 const _ = cockpit.gettext;
 
@@ -360,18 +364,31 @@ export const WiFiAPDialog = ({ settings, connection, dev, dualMode = false }) =>
 
     // Safely access settings with fallbacks
     const safeSettings = settings || {};
+    const isCreateDialog = !connection;
+
+    // The AP's current integration mode (Isolated on create). Custom APs never
+    // reach this dialog (Configure is suppressed), so the selector offers only
+    // the two managed modes; a non-managed seed falls back to Isolated.
+    const currentMode = isCreateDialog
+        ? AP_INTEGRATION_MODES.ISOLATED
+        : classifyApIntegrationMode(connection);
+    const initialMode = isManagedApMode(currentMode) ? currentMode : AP_INTEGRATION_MODES.ISOLATED;
+    const initialBand = safeSettings.wifi?.band || "bg";
+
     const [iface, setIface] = useState(safeSettings.connection?.interface_name || (dev && dev.Interface) || "");
     const [ssid, setSSID] = useState(safeSettings.wifi?.ssid || generateDefaultSSID(dev));
     const [password, setPassword] = useState("");
     const [securityType, setSecurityType] = useState(safeSettings.wifi_security?.key_mgmt || "wpa-psk");
-    const [band, setBand] = useState(safeSettings.wifi?.band || "bg");
-    const [channel, setChannel] = useState(safeSettings.wifi?.channel || 0);
+    const [band, setBand] = useState(initialBand);
+    // Normalize at mount so a Bridged AP never seeds the now-absent Automatic
+    // option (R3): an unset/Automatic channel becomes the band default.
+    const [channel, setChannel] = useState(apModeNormalizeChannel(initialMode, initialBand, safeSettings.wifi?.channel || 0));
     const [hidden, setHidden] = useState(safeSettings.wifi?.hidden || false);
     const [ipAddress, setIPAddress] = useState(safeSettings.ipv4?.address_data?.[0]?.address || "10.42.0.1");
     const [prefix, setPrefix] = useState(safeSettings.ipv4?.address_data?.[0]?.prefix || 24);
     const [dialogError, setDialogError] = useState("");
-
-    const isCreateDialog = !connection;
+    const [mode, setMode] = useState(initialMode);
+    const isBridged = mode === AP_INTEGRATION_MODES.BRIDGED;
 
     // Validate SSID
     const validateSSID = (value) => {
@@ -435,7 +452,9 @@ export const WiFiAPDialog = ({ settings, connection, dev, dualMode = false }) =>
     const ssidValidation = validateSSID(ssid);
     const passwordValidation = validatePassword(password, securityType);
     const ipValidation = validateIP(ipAddress);
-    const isFormValid = ssidValidation.valid && passwordValidation.valid && ipValidation.valid;
+    const channelValid = isApModeChannelValid(mode, channel);
+    const isFormValid = ssidValidation.valid && passwordValidation.valid &&
+        (isBridged || ipValidation.valid) && channelValid;
 
     // Helper to create virtual interface for dual mode
     const createVirtualInterface = async (mainIface, apIface) => {
@@ -474,7 +493,9 @@ export const WiFiAPDialog = ({ settings, connection, dev, dualMode = false }) =>
 
         // Validate all fields
         if (!isFormValid) {
-            setDialogError(ssidValidation.message || passwordValidation.message || ipValidation.message);
+            const channelMessage = !channelValid ? _("Select a fixed channel for Bridged mode") : "";
+            setDialogError(ssidValidation.message || passwordValidation.message ||
+                (isBridged ? "" : ipValidation.message) || channelMessage);
             return;
         }
 
@@ -489,6 +510,10 @@ export const WiFiAPDialog = ({ settings, connection, dev, dualMode = false }) =>
                 return;
             }
         }
+
+        // Bridged always carries a fixed channel (R3), Isolated omits it when
+        // Automatic — one decision shared by every save branch below.
+        const emitChannel = apModeChannelToEmit(mode, band, channel);
 
         // Build Access Point connection settings
         const apSettings = {
@@ -505,17 +530,22 @@ export const WiFiAPDialog = ({ settings, connection, dev, dualMode = false }) =>
                 ssid,
                 mode: "ap",
                 band,
-                ...(channel !== 0 && { channel }), // Only include if not auto
+                ...(emitChannel !== null && { channel: emitChannel }),
                 ...(hidden && { hidden: true }), // Only include if hidden
             },
-            ipv4: {
-                method: "shared", // Enables DHCP server
-                address_data: [{ address: ipAddress, prefix: String(prefix) }],
-            },
-            ipv6: {
-                method: "ignore",
-            },
         };
+
+        // Isolated runs a local DHCP/NAT island; Bridged carries no ipv4/ipv6 —
+        // the bridge (wired up in Unit 6) owns addressing, so never emit the
+        // 10.42.0.x range here (R6/R7).
+        const ipv4 = apModeIpv4Settings(mode, ipAddress, prefix);
+        if (ipv4) {
+            apSettings.ipv4 = ipv4;
+            apSettings.ipv6 = { method: "ignore" };
+        } else {
+            delete apSettings.ipv4;
+            delete apSettings.ipv6;
+        }
 
         // Add security if not open network
         if (securityType !== "none") {
@@ -555,13 +585,18 @@ export const WiFiAPDialog = ({ settings, connection, dev, dualMode = false }) =>
                         "autoconnect", "yes",
                         "ssid", ssid,
                         "mode", "ap",
-                        "ipv4.method", "shared",
-                        "ipv4.addresses", `${ipAddress}/${prefix}`,
                         "wifi.band", band,
                     ];
 
-                    if (channel !== 0) {
-                        args.push("wifi.channel", String(channel));
+                    // Isolated only — Bridged carries no ipv4 (R6/R7); the
+                    // enslave onto br0 is Unit 6.
+                    if (!isBridged) {
+                        args.push("ipv4.method", "shared");
+                        args.push("ipv4.addresses", `${ipAddress}/${prefix}`);
+                    }
+
+                    if (emitChannel !== null) {
+                        args.push("wifi.channel", String(emitChannel));
                     }
 
                     if (securityType !== "none" && password) {
@@ -712,12 +747,54 @@ export const WiFiAPDialog = ({ settings, connection, dev, dualMode = false }) =>
                     </Alert>
                 )}
 
+                <FormGroup label={_("Network mode")} fieldId={idPrefix + "-mode-select"}>
+                    <select
+                        id={idPrefix + "-mode-select"}
+                        className="pf-v6-c-form-control"
+                        value={mode}
+                        onChange={(e) => {
+                            const newMode = e.target.value;
+                            setMode(newMode);
+                            setChannel(apModeNormalizeChannel(newMode, band, channel));
+                        }}
+                    >
+                        <option value={AP_INTEGRATION_MODES.ISOLATED}>{apIntegrationModeLabel(AP_INTEGRATION_MODES.ISOLATED)}</option>
+                        <option value={AP_INTEGRATION_MODES.BRIDGED}>{apIntegrationModeLabel(AP_INTEGRATION_MODES.BRIDGED)}</option>
+                    </select>
+                    <FormHelperText>
+                        <HelperText>
+                            <HelperTextItem>
+                                {isBridged
+                                    ? _("The AP joins your LAN through the wired connection.")
+                                    : _("The AP runs its own isolated network with local DHCP.")}
+                            </HelperTextItem>
+                        </HelperText>
+                    </FormHelperText>
+                </FormGroup>
+
+                {mode !== currentMode && (
+                    <Alert
+                        variant="warning"
+                        isInline
+                        title={_("Switching network mode is disruptive")}
+                        style={{ marginBottom: "1rem" }}
+                    >
+                        <p>
+                            {_("Applying this change may briefly disconnect AP clients, and this device's address may change. Afterward, reach it by its hostname.")}
+                        </p>
+                    </Alert>
+                )}
+
                 <FormGroup label={_("Frequency Band")} fieldId={idPrefix + "-band-select"}>
                     <select
                         id={idPrefix + "-band-select"}
                         className="pf-v6-c-form-control"
                         value={band}
-                        onChange={(e) => setBand(e.target.value)}
+                        onChange={(e) => {
+                            const newBand = e.target.value;
+                            setBand(newBand);
+                            setChannel(apModeNormalizeChannel(mode, newBand, channel));
+                        }}
                     >
                         <option value="bg">{_("2.4 GHz")}</option>
                         <option value="a">{_("5 GHz")}</option>
@@ -738,18 +815,22 @@ export const WiFiAPDialog = ({ settings, connection, dev, dualMode = false }) =>
                         value={channel}
                         onChange={(e) => setChannel(parseInt(e.target.value))}
                     >
-                        <option value="0">{_("Automatic")}</option>
-                        {band === "bg" && [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11].map(ch => (
+                        {/* Bridged requires a fixed channel (minimal firmware drops ACS), so
+                            Automatic is offered in Isolated only (R3). */}
+                        {!isBridged && <option value="0">{_("Automatic")}</option>}
+                        {band === "bg" && AP_CHANNELS_24.map(ch => (
                             <option key={ch} value={ch}>{ch}</option>
                         ))}
-                        {band === "a" && [36, 40, 44, 48, 149, 153, 157, 161, 165].map(ch => (
+                        {band === "a" && AP_CHANNELS_5_DFS_FREE.map(ch => (
                             <option key={ch} value={ch}>{ch}</option>
                         ))}
                     </select>
                     <FormHelperText>
                         <HelperText>
                             <HelperTextItem>
-                                {_("Leave as Automatic unless experiencing interference")}
+                                {isBridged
+                                    ? _("Bridged mode needs a fixed channel.")
+                                    : _("Leave as Automatic unless experiencing interference")}
                             </HelperTextItem>
                         </HelperText>
                     </FormHelperText>
@@ -771,50 +852,64 @@ export const WiFiAPDialog = ({ settings, connection, dev, dualMode = false }) =>
                     </FormHelperText>
                 </FormGroup>
 
-                <FormGroup label={_("IP Address")} fieldId={idPrefix + "-ip-input"}>
-                    <TextInput
-                        id={idPrefix + "-ip-input"}
-                        value={ipAddress}
-                        onChange={(_, val) => setIPAddress(val)}
-                        validated={ipAddress && !ipValidation.valid ? "error" : "default"}
-                    />
-                    {ipAddress && !ipValidation.valid && (
-                        <FormHelperText>
-                            <HelperText>
-                                <HelperTextItem variant="error">
-                                    {ipValidation.message}
-                                </HelperTextItem>
-                            </HelperText>
-                        </FormHelperText>
-                    )}
-                    {(!ipAddress || ipValidation.valid) && (
-                        <FormHelperText>
+                {isBridged
+                    ? (
+                        <FormGroup label={_("IP addressing")}>
                             <HelperText>
                                 <HelperTextItem>
-                                    {_("Default: 10.42.0.1")}
+                                    {_("Clients receive addresses from your upstream gateway. This device has no separate AP subnet in Bridged mode.")}
                                 </HelperTextItem>
                             </HelperText>
-                        </FormHelperText>
-                    )}
-                </FormGroup>
+                        </FormGroup>
+                    )
+                    : (
+                        <>
+                            <FormGroup label={_("IP Address")} fieldId={idPrefix + "-ip-input"}>
+                                <TextInput
+                                id={idPrefix + "-ip-input"}
+                                value={ipAddress}
+                                onChange={(_, val) => setIPAddress(val)}
+                                validated={ipAddress && !ipValidation.valid ? "error" : "default"}
+                                />
+                                {ipAddress && !ipValidation.valid && (
+                                    <FormHelperText>
+                                        <HelperText>
+                                            <HelperTextItem variant="error">
+                                                {ipValidation.message}
+                                            </HelperTextItem>
+                                        </HelperText>
+                                    </FormHelperText>
+                                )}
+                                {(!ipAddress || ipValidation.valid) && (
+                                    <FormHelperText>
+                                        <HelperText>
+                                            <HelperTextItem>
+                                                {_("Default: 10.42.0.1")}
+                                            </HelperTextItem>
+                                        </HelperText>
+                                    </FormHelperText>
+                                )}
+                            </FormGroup>
 
-                <FormGroup label={_("Subnet Prefix")} fieldId={idPrefix + "-prefix-input"}>
-                    <TextInput
-                        id={idPrefix + "-prefix-input"}
-                        type="number"
-                        value={prefix}
-                        onChange={(_, val) => setPrefix(val)}
-                        min="1"
-                        max="32"
-                    />
-                    <FormHelperText>
-                        <HelperText>
-                            <HelperTextItem>
-                                {_("Default: 24 (255.255.255.0, supports 254 clients)")}
-                            </HelperTextItem>
-                        </HelperText>
-                    </FormHelperText>
-                </FormGroup>
+                            <FormGroup label={_("Subnet Prefix")} fieldId={idPrefix + "-prefix-input"}>
+                                <TextInput
+                                id={idPrefix + "-prefix-input"}
+                                type="number"
+                                value={prefix}
+                                onChange={(_, val) => setPrefix(val)}
+                                min="1"
+                                max="32"
+                                />
+                                <FormHelperText>
+                                    <HelperText>
+                                        <HelperTextItem>
+                                            {_("Default: 24 (255.255.255.0, supports 254 clients)")}
+                                        </HelperTextItem>
+                                    </HelperText>
+                                </FormHelperText>
+                            </FormGroup>
+                        </>
+                    )}
             </Form>
         </NetworkModal>
     );
