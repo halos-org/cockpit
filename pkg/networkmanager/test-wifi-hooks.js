@@ -25,7 +25,8 @@
  */
 
 import QUnit from "qunit-tests";
-import { parseSecurityFlags, ConnectionState } from "./wifi-hooks";
+import { parseSecurityFlags, ConnectionState, apIntegrationModeLabel, apIpRangeText } from "./wifi-hooks";
+import { classifyApIntegrationMode, isManagedApMode, AP_INTEGRATION_MODES } from "./ap-integration-mode";
 
 // ============================================================================
 // Tests for parseSecurityFlags
@@ -579,6 +580,159 @@ QUnit.test("sorts by signal strength descending", function(assert) {
     assert.strictEqual(sorted[0].ssid, "Strong");
     assert.strictEqual(sorted[1].ssid, "Medium");
     assert.strictEqual(sorted[2].ssid, "Weak");
+});
+
+// ============================================================================
+// Tests for classifyApIntegrationMode
+// ============================================================================
+
+QUnit.module("classifyApIntegrationMode");
+
+// Fixture builders mirror the parsed NM model shape (interfaces.js settings_from_nm
+// plus the resolved .Groups / .Members object graph).
+function apMember() {
+    return { Settings: { connection: { type: "802-11-wireless", interface_name: "wlan0ap" }, wifi: { mode: "ap" } } };
+}
+function ethMember(ifname) {
+    return { Settings: { connection: { type: "802-3-ethernet", interface_name: ifname } } };
+}
+function br0Master(members) {
+    return {
+        Settings: { connection: { interface_name: "br0" }, bridge: { interface_name: "br0" } },
+        Members: members,
+    };
+}
+function isolatedAP(method) {
+    return { Settings: { connection: { type: "802-11-wireless", interface_name: "wlan0ap" }, wifi: { mode: "ap" }, ipv4: { method } } };
+}
+function bridgedAP(groups) {
+    return {
+        Settings: { connection: { type: "802-11-wireless", interface_name: "wlan0ap", member_type: "bridge", group: "uuid-br0" }, wifi: { mode: "ap" } },
+        Groups: groups,
+    };
+}
+
+QUnit.test("Isolated: shared method, no master", function(assert) {
+    assert.strictEqual(classifyApIntegrationMode(isolatedAP("shared")), AP_INTEGRATION_MODES.ISOLATED);
+});
+
+QUnit.test("Isolated: customized shared subnet still Isolated (IP editable, R2)", function(assert) {
+    const ap = isolatedAP("shared");
+    ap.Settings.ipv4.address_data = [{ address: "10.99.0.1", prefix: 24 }];
+    assert.strictEqual(classifyApIntegrationMode(ap), AP_INTEGRATION_MODES.ISOLATED);
+});
+
+QUnit.test("Bridged: br0 master with exactly eth0 + wlan0ap ports", function(assert) {
+    const ap = bridgedAP([br0Master([apMember(), ethMember("eth0")])]);
+    assert.strictEqual(classifyApIntegrationMode(ap), AP_INTEGRATION_MODES.BRIDGED);
+});
+
+QUnit.test("Bridged: mid-transition thin Members (AP not yet listed)", function(assert) {
+    const ap = bridgedAP([br0Master([ethMember("eth0")])]);
+    assert.strictEqual(classifyApIntegrationMode(ap), AP_INTEGRATION_MODES.BRIDGED);
+});
+
+QUnit.test("Bridged: unresolved master but group names br0 directly", function(assert) {
+    const ap = bridgedAP([]);
+    ap.Settings.connection.group = "br0";
+    assert.strictEqual(classifyApIntegrationMode(ap), AP_INTEGRATION_MODES.BRIDGED);
+});
+
+QUnit.test("Custom: bridge has an extra foreign port", function(assert) {
+    const ap = bridgedAP([br0Master([apMember(), ethMember("eth0"), ethMember("eth1")])]);
+    assert.strictEqual(classifyApIntegrationMode(ap), AP_INTEGRATION_MODES.CUSTOM);
+});
+
+QUnit.test("Custom: master bridge is not br0", function(assert) {
+    const notBr0 = { Settings: { connection: { interface_name: "br1" }, bridge: { interface_name: "br1" } }, Members: [] };
+    const ap = bridgedAP([notBr0]);
+    ap.Settings.connection.group = "uuid-br1";
+    assert.strictEqual(classifyApIntegrationMode(ap), AP_INTEGRATION_MODES.CUSTOM);
+});
+
+QUnit.test("Custom: static/manual AP IP, no master", function(assert) {
+    assert.strictEqual(classifyApIntegrationMode(isolatedAP("manual")), AP_INTEGRATION_MODES.CUSTOM);
+});
+
+QUnit.test("Custom: auto method, no master", function(assert) {
+    assert.strictEqual(classifyApIntegrationMode(isolatedAP("auto")), AP_INTEGRATION_MODES.CUSTOM);
+});
+
+QUnit.test("Custom: member of a non-bridge master (bond)", function(assert) {
+    const ap = {
+        Settings: { connection: { type: "802-11-wireless", member_type: "bond", group: "bond0" }, wifi: { mode: "ap" } },
+        Groups: [],
+    };
+    assert.strictEqual(classifyApIntegrationMode(ap), AP_INTEGRATION_MODES.CUSTOM);
+});
+
+QUnit.test("Custom: missing/empty settings is the safe sink", function(assert) {
+    assert.strictEqual(classifyApIntegrationMode(null), AP_INTEGRATION_MODES.CUSTOM);
+    assert.strictEqual(classifyApIntegrationMode({}), AP_INTEGRATION_MODES.CUSTOM);
+});
+
+QUnit.test("isManagedApMode: Isolated and Bridged are editable, Custom is not", function(assert) {
+    assert.strictEqual(isManagedApMode(AP_INTEGRATION_MODES.ISOLATED), true);
+    assert.strictEqual(isManagedApMode(AP_INTEGRATION_MODES.BRIDGED), true);
+    assert.strictEqual(isManagedApMode(AP_INTEGRATION_MODES.CUSTOM), false);
+});
+
+// ============================================================================
+// Tests for apIntegrationModeLabel
+// ============================================================================
+
+QUnit.module("apIntegrationModeLabel");
+
+QUnit.test("returns the exact R10 labels per mode", function(assert) {
+    assert.strictEqual(apIntegrationModeLabel(AP_INTEGRATION_MODES.ISOLATED), "Isolated network (NAT)");
+    assert.strictEqual(apIntegrationModeLabel(AP_INTEGRATION_MODES.BRIDGED), "Bridged to LAN");
+    assert.strictEqual(apIntegrationModeLabel(AP_INTEGRATION_MODES.CUSTOM), "Custom (externally configured)");
+});
+
+QUnit.test("defaults to Custom for an unknown mode (bias to read-only)", function(assert) {
+    assert.strictEqual(apIntegrationModeLabel(undefined), "Custom (externally configured)");
+});
+
+// ============================================================================
+// Tests for apIpRangeText
+// ============================================================================
+
+QUnit.module("apIpRangeText");
+
+QUnit.test("Isolated shows the actual address when present", function(assert) {
+    const ipv4 = { method: "shared", address_data: [{ address: "10.42.0.1", prefix: 24 }] };
+    assert.strictEqual(apIpRangeText(AP_INTEGRATION_MODES.ISOLATED, ipv4), "10.42.0.1/24");
+});
+
+QUnit.test("Isolated falls back to the default range when no address", function(assert) {
+    assert.strictEqual(apIpRangeText(AP_INTEGRATION_MODES.ISOLATED, { method: "shared" }), "10.42.0.1/24");
+});
+
+QUnit.test("Isolated tolerates undefined ipv4 — still the default range", function(assert) {
+    assert.strictEqual(apIpRangeText(AP_INTEGRATION_MODES.ISOLATED, undefined), "10.42.0.1/24");
+});
+
+QUnit.test("Bridged never leaks 10.42 — shows upstream-gateway wording", function(assert) {
+    const text = apIpRangeText(AP_INTEGRATION_MODES.BRIDGED, undefined);
+    assert.strictEqual(text, "Leased from upstream gateway");
+    assert.strictEqual(text.includes("10.42"), false);
+});
+
+QUnit.test("Custom shows detected address when present", function(assert) {
+    const ipv4 = { method: "manual", address_data: [{ address: "192.168.8.2", prefix: 24 }] };
+    assert.strictEqual(apIpRangeText(AP_INTEGRATION_MODES.CUSTOM, ipv4), "192.168.8.2/24");
+});
+
+QUnit.test("Custom without an address shows 'Externally configured', never 10.42", function(assert) {
+    const text = apIpRangeText(AP_INTEGRATION_MODES.CUSTOM, undefined);
+    assert.strictEqual(text, "Externally configured");
+    assert.strictEqual(text.includes("10.42"), false);
+});
+
+QUnit.test("Unknown mode degrades to the no-10.42 Custom text", function(assert) {
+    const text = apIpRangeText(undefined, undefined);
+    assert.strictEqual(text, "Externally configured");
+    assert.strictEqual(text.includes("10.42"), false);
 });
 
 // ============================================================================

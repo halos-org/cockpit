@@ -33,8 +33,46 @@ import cockpit from 'cockpit';
 
 import { ModelContext } from './model-context';
 import { decode_nm_property } from './utils';
+import { classifyApIntegrationMode, AP_INTEGRATION_MODES } from './ap-integration-mode';
 
 const _ = cockpit.gettext;
+
+/**
+ * User-facing label for an AP network integration mode (R10). One source of
+ * truth shared by the active-AP card and the compact WiFi card.
+ * An unknown mode degrades to Custom — the read-only, no-10.42 surface — to
+ * match the classifier's bias-to-Custom safety posture.
+ * @param {'isolated'|'bridged'|'custom'} mode
+ * @returns {string}
+ */
+export function apIntegrationModeLabel(mode) {
+    switch (mode) {
+    case AP_INTEGRATION_MODES.ISOLATED:
+        return _("Isolated network (NAT)");
+    case AP_INTEGRATION_MODES.BRIDGED:
+        return _("Bridged to LAN");
+    default:
+        return _("Custom (externally configured)");
+    }
+}
+
+/**
+ * Mode-aware IP-range display text. Never leaks the Isolated 10.42.0.x range in
+ * Bridged, and never the hardcoded 10.42.0.1 default in Custom (R6/R7).
+ * @param {'isolated'|'bridged'|'custom'} mode
+ * @param {object} [ipv4Settings] - the connection's parsed ipv4 settings, if any
+ * @returns {string}
+ */
+export function apIpRangeText(mode, ipv4Settings) {
+    const addr = ipv4Settings?.address_data?.[0];
+    const addrText = addr ? `${addr.address}/${addr.prefix}` : null;
+    if (mode === AP_INTEGRATION_MODES.ISOLATED)
+        return addrText || "10.42.0.1/24";
+    if (mode === AP_INTEGRATION_MODES.BRIDGED)
+        return _("Leased from upstream gateway");
+    // Custom, or any unknown mode, falls here: never the 10.42 default.
+    return addrText || _("Externally configured");
+}
 
 /**
  * Parse security flags from AccessPoint properties
@@ -1003,8 +1041,9 @@ export function useWiFiAPInfo(device) {
                     }
                 }
 
-                // IP range from ipv4 settings
-                const ipRange = ipv4Settings.method === "shared" ? "10.42.0.x" : "N/A";
+                // Network integration mode + mode-aware IP range (R6/R16)
+                const integrationMode = classifyApIntegrationMode(apConnection.Connection);
+                const ipRange = apIpRangeText(integrationMode, ipv4Settings);
 
                 // Get SSID
                 let ssid = wifiSettings.ssid;
@@ -1021,6 +1060,7 @@ export function useWiFiAPInfo(device) {
                     channel,
                     clientCount,
                     ipRange,
+                    integrationMode,
                     security,
                     connectionPath: apConnection[" priv"]?.path,
                 });
