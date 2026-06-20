@@ -113,3 +113,66 @@ export function classifyApIntegrationMode(apConnection) {
 export function isManagedApMode(mode) {
     return mode === AP_INTEGRATION_MODES.ISOLATED || mode === AP_INTEGRATION_MODES.BRIDGED;
 }
+
+// Selectable AP channels per band. DFS-free 5 GHz only — the minimal firmware
+// drops DFS/ACS, so Bridged needs a fixed, non-DFS channel (R3).
+export const AP_CHANNELS_24 = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11];
+export const AP_CHANNELS_5_DFS_FREE = [36, 40, 44, 48, 149, 153, 157, 161, 165];
+
+function channelsForBand(band) {
+    return band === "a" ? AP_CHANNELS_5_DFS_FREE : AP_CHANNELS_24;
+}
+
+// Fixed-channel default per band when Bridged needs a concrete channel: 2.4 GHz
+// ch 6 (the conventional non-overlapping pick), 5 GHz ch 36 (lowest DFS-free).
+function defaultChannelForBand(band) {
+    return band === "a" ? 36 : 6;
+}
+
+/**
+ * The ipv4 settings an AP carries in the given mode. Isolated runs a local
+ * DHCP/NAT island (R2); Bridged (and anything else) carries none — the bridge
+ * owns addressing, so the dialog must never emit the 10.42.0.x range (R6/R7).
+ *
+ * @param {'isolated'|'bridged'|'custom'} mode
+ * @param {string} ipAddress
+ * @param {number|string} prefix
+ * @returns {{method: string, address_data: object[]}|null}
+ */
+export function apModeIpv4Settings(mode, ipAddress, prefix) {
+    if (mode === AP_INTEGRATION_MODES.ISOLATED)
+        return { method: "shared", address_data: [{ address: ipAddress, prefix: String(prefix) }] };
+    return null;
+}
+
+/**
+ * Coerce a channel selection to one valid for the mode and band. Isolated keeps
+ * the selection (including Automatic, 0). Bridged requires a fixed channel (R3),
+ * so Automatic or a channel not in the band falls to that band's default
+ * (2.4 GHz ch 6, 5 GHz ch 36).
+ *
+ * @param {'isolated'|'bridged'|'custom'} mode
+ * @param {string} band - "bg" (2.4 GHz) or "a" (5 GHz)
+ * @param {number} channel
+ * @returns {number}
+ */
+export function apModeNormalizeChannel(mode, band, channel) {
+    if (mode !== AP_INTEGRATION_MODES.BRIDGED)
+        return channel;
+    const channels = channelsForBand(band);
+    return channels.includes(channel) ? channel : defaultChannelForBand(band);
+}
+
+/**
+ * Whether a channel selection is submittable in the given mode. Bridged forbids
+ * Automatic (0); Isolated allows it (R3).
+ *
+ * @param {'isolated'|'bridged'|'custom'} mode
+ * @param {number} channel
+ * @returns {boolean}
+ */
+export function isApModeChannelValid(mode, channel) {
+    if (mode === AP_INTEGRATION_MODES.BRIDGED)
+        return channel !== 0;
+    return true;
+}
