@@ -25,7 +25,7 @@
  */
 
 import QUnit from "qunit-tests";
-import { parseSecurityFlags, ConnectionState } from "./wifi-hooks";
+import { parseSecurityFlags, ConnectionState, apIntegrationModeLabel, apIpRangeText } from "./wifi-hooks";
 import { classifyApIntegrationMode, isManagedApMode, AP_INTEGRATION_MODES } from "./ap-integration-mode";
 
 // ============================================================================
@@ -675,6 +675,54 @@ QUnit.test("isManagedApMode: Isolated and Bridged are editable, Custom is not", 
     assert.strictEqual(isManagedApMode(AP_INTEGRATION_MODES.ISOLATED), true);
     assert.strictEqual(isManagedApMode(AP_INTEGRATION_MODES.BRIDGED), true);
     assert.strictEqual(isManagedApMode(AP_INTEGRATION_MODES.CUSTOM), false);
+});
+
+// ============================================================================
+// Tests for apIntegrationModeLabel
+// ============================================================================
+
+QUnit.module("apIntegrationModeLabel");
+
+QUnit.test("returns the exact R10 labels per mode", function(assert) {
+    assert.strictEqual(apIntegrationModeLabel(AP_INTEGRATION_MODES.ISOLATED), "Isolated network (NAT)");
+    assert.strictEqual(apIntegrationModeLabel(AP_INTEGRATION_MODES.BRIDGED), "Bridged to LAN");
+    assert.strictEqual(apIntegrationModeLabel(AP_INTEGRATION_MODES.CUSTOM), "Custom (externally configured)");
+});
+
+QUnit.test("defaults to Isolated for an unknown mode", function(assert) {
+    assert.strictEqual(apIntegrationModeLabel(undefined), "Isolated network (NAT)");
+});
+
+// ============================================================================
+// Tests for apIpRangeText
+// ============================================================================
+
+QUnit.module("apIpRangeText");
+
+QUnit.test("Isolated shows the actual address when present", function(assert) {
+    const ipv4 = { method: "shared", address_data: [{ address: "10.42.0.1", prefix: 24 }] };
+    assert.strictEqual(apIpRangeText(AP_INTEGRATION_MODES.ISOLATED, ipv4), "10.42.0.1/24");
+});
+
+QUnit.test("Isolated falls back to the default range when no address", function(assert) {
+    assert.strictEqual(apIpRangeText(AP_INTEGRATION_MODES.ISOLATED, { method: "shared" }), "10.42.0.1/24");
+});
+
+QUnit.test("Bridged never leaks 10.42 — shows upstream-gateway wording", function(assert) {
+    const text = apIpRangeText(AP_INTEGRATION_MODES.BRIDGED, undefined);
+    assert.strictEqual(text, "Leased from upstream gateway");
+    assert.strictEqual(text.includes("10.42"), false);
+});
+
+QUnit.test("Custom shows detected address when present", function(assert) {
+    const ipv4 = { method: "manual", address_data: [{ address: "192.168.8.2", prefix: 24 }] };
+    assert.strictEqual(apIpRangeText(AP_INTEGRATION_MODES.CUSTOM, ipv4), "192.168.8.2/24");
+});
+
+QUnit.test("Custom without an address shows 'Externally configured', never 10.42", function(assert) {
+    const text = apIpRangeText(AP_INTEGRATION_MODES.CUSTOM, undefined);
+    assert.strictEqual(text, "Externally configured");
+    assert.strictEqual(text.includes("10.42"), false);
 });
 
 // ============================================================================

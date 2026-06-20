@@ -52,6 +52,7 @@ import {
     useWiFiCapabilities,
     useWiFiConnectionDetails,
     useWiFiAPInfo,
+    apIntegrationModeLabel,
     ConnectionState,
 } from './wifi-hooks';
 
@@ -855,7 +856,8 @@ export const WiFiCard = ({ device, interfaceName }) => {
     const apItems = [];
     if (apActive && apInfo) {
         apItems.push(
-            { label: _("SSID"), value: apInfo.ssid || "—" }
+            { label: _("SSID"), value: apInfo.ssid || "—" },
+            { label: _("Network mode"), value: apIntegrationModeLabel(apInfo.integrationMode) }
         );
         // Only show band/channel for AP-only mode (not dual mode)
         // In dual mode, the AP uses the same band/channel as the client
@@ -867,7 +869,8 @@ export const WiFiCard = ({ device, interfaceName }) => {
         }
         apItems.push(
             { label: _("Clients"), value: apInfo.clientCount || "—" },
-            { label: _("Security"), value: apInfo.security || "—" }
+            { label: _("Security"), value: apInfo.security || "—" },
+            { label: _("IP range"), value: apInfo.ipRange || "—" }
         );
     }
 

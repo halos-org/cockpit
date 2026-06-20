@@ -45,6 +45,8 @@ import { ModelContext } from './model-context';
 import { decode_nm_property } from './utils';
 import { isAdminRequired, useAdminPermission } from './wifi-admin-gating';
 import { AdminGatedButton } from './wifi-admin-gated-button';
+import { apIntegrationModeLabel, apIpRangeText } from './wifi-hooks';
+import { classifyApIntegrationMode, isManagedApMode } from './ap-integration-mode';
 
 const _ = cockpit.gettext;
 
@@ -1305,7 +1307,8 @@ export const WiFiAPConfig = ({ dev, connection, activeConnection, apActive, canE
     const settings = connection?.Settings;
     const ssid = settings?.wifi?.ssid || _("Unknown");
     const security = settings?.wifi_security?.key_mgmt ? "WPA2" : _("Open");
-    const ipConfig = settings?.ipv4?.address_data?.[0] || { address: "10.42.0.1", prefix: 24 };
+    const integrationMode = classifyApIntegrationMode(connection);
+    const editable = isManagedApMode(integrationMode);
 
     // Get the actual AP interface from connection settings (interface-name), or fall back to dev
     const apInterface = settings?.connection?.interface_name || dev?.Interface;
@@ -1399,14 +1402,19 @@ export const WiFiAPConfig = ({ dev, connection, activeConnection, apActive, canE
             <CardHeader actions={{
                 actions: (
                     <>
-                        {/* Configure is gated even though it only opens a dialog: every
-                            settings change inside WiFiAPDialog ultimately needs admin to
-                            persist, so allowing the dialog to open would lead the user
-                            into a workflow they can't complete. Matches the audit
-                            (halos-org/halos#121) prescription. */}
-                        <AdminGatedButton variant="secondary" onClick={handleConfigure} style={{ marginRight: "var(--pf-global--spacer--sm)" }} isAdminGated={isAdminGated}>
-                            {_("Configure")}
-                        </AdminGatedButton>
+                        {/* Configure is hidden for a Custom AP (R9): its live config
+                            matches neither managed template, so it is read-only and the
+                            editor is suppressed rather than opened on a config it can't
+                            safely round-trip. Configure is also admin-gated even when
+                            shown: every change inside WiFiAPDialog ultimately needs admin
+                            to persist, so opening the dialog without admin would lead the
+                            user into a workflow they can't complete (audit
+                            halos-org/halos#121). */}
+                        {editable && (
+                            <AdminGatedButton variant="secondary" onClick={handleConfigure} style={{ marginRight: "var(--pf-global--spacer--sm)" }} isAdminGated={isAdminGated}>
+                                {_("Configure")}
+                            </AdminGatedButton>
+                        )}
                         <AdminGatedButton variant="danger" onClick={handleDisable} isAdminGated={isAdminGated}>
                             {_("Disable")}
                         </AdminGatedButton>
@@ -1432,11 +1440,25 @@ export const WiFiAPConfig = ({ dev, connection, activeConnection, apActive, canE
                         style={{ marginBottom: "1rem" }}
                     />
                 )}
+                {!editable && (
+                    <Alert
+                        variant="info"
+                        isInline
+                        title={_("This Access Point was configured outside HaLOS and is shown read-only. Reconfigure it from the command line.")}
+                        style={{ marginBottom: "1rem" }}
+                    />
+                )}
                 <DescriptionList isHorizontal>
                     <DescriptionListGroup>
                         <DescriptionListTerm>{_("Status")}</DescriptionListTerm>
                         <DescriptionListDescription>
                             <Label color="green">{_("Active")}</Label>
+                        </DescriptionListDescription>
+                    </DescriptionListGroup>
+                    <DescriptionListGroup>
+                        <DescriptionListTerm>{_("Network mode")}</DescriptionListTerm>
+                        <DescriptionListDescription>
+                            {apIntegrationModeLabel(integrationMode)}
                         </DescriptionListDescription>
                     </DescriptionListGroup>
                     <DescriptionListGroup>
@@ -1450,7 +1472,7 @@ export const WiFiAPConfig = ({ dev, connection, activeConnection, apActive, canE
                     <DescriptionListGroup>
                         <DescriptionListTerm>{_("IP Range")}</DescriptionListTerm>
                         <DescriptionListDescription>
-                            {ipConfig.address}/{ipConfig.prefix}
+                            {apIpRangeText(integrationMode, settings?.ipv4)}
                         </DescriptionListDescription>
                     </DescriptionListGroup>
                     <DescriptionListGroup>
