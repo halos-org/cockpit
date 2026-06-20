@@ -689,8 +689,8 @@ QUnit.test("returns the exact R10 labels per mode", function(assert) {
     assert.strictEqual(apIntegrationModeLabel(AP_INTEGRATION_MODES.CUSTOM), "Custom (externally configured)");
 });
 
-QUnit.test("defaults to Isolated for an unknown mode", function(assert) {
-    assert.strictEqual(apIntegrationModeLabel(undefined), "Isolated network (NAT)");
+QUnit.test("defaults to Custom for an unknown mode (bias to read-only)", function(assert) {
+    assert.strictEqual(apIntegrationModeLabel(undefined), "Custom (externally configured)");
 });
 
 // ============================================================================
@@ -708,6 +708,10 @@ QUnit.test("Isolated falls back to the default range when no address", function(
     assert.strictEqual(apIpRangeText(AP_INTEGRATION_MODES.ISOLATED, { method: "shared" }), "10.42.0.1/24");
 });
 
+QUnit.test("Isolated tolerates undefined ipv4 — still the default range", function(assert) {
+    assert.strictEqual(apIpRangeText(AP_INTEGRATION_MODES.ISOLATED, undefined), "10.42.0.1/24");
+});
+
 QUnit.test("Bridged never leaks 10.42 — shows upstream-gateway wording", function(assert) {
     const text = apIpRangeText(AP_INTEGRATION_MODES.BRIDGED, undefined);
     assert.strictEqual(text, "Leased from upstream gateway");
@@ -721,6 +725,12 @@ QUnit.test("Custom shows detected address when present", function(assert) {
 
 QUnit.test("Custom without an address shows 'Externally configured', never 10.42", function(assert) {
     const text = apIpRangeText(AP_INTEGRATION_MODES.CUSTOM, undefined);
+    assert.strictEqual(text, "Externally configured");
+    assert.strictEqual(text.includes("10.42"), false);
+});
+
+QUnit.test("Unknown mode degrades to the no-10.42 Custom text", function(assert) {
+    const text = apIpRangeText(undefined, undefined);
     assert.strictEqual(text, "Externally configured");
     assert.strictEqual(text.includes("10.42"), false);
 });

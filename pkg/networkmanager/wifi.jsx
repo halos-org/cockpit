@@ -1307,6 +1307,9 @@ export const WiFiAPConfig = ({ dev, connection, activeConnection, apActive, canE
     const settings = connection?.Settings;
     const ssid = settings?.wifi?.ssid || _("Unknown");
     const security = settings?.wifi_security?.key_mgmt ? "WPA2" : _("Open");
+    // Editability rides entirely on the classifier: a managed (Isolated/Bridged)
+    // mode is editable, Custom is read-only. So the classifier's mid-transition
+    // handling is what keeps a still-converging Bridged AP from going read-only.
     const integrationMode = classifyApIntegrationMode(connection);
     const editable = isManagedApMode(integrationMode);
 
@@ -1402,14 +1405,11 @@ export const WiFiAPConfig = ({ dev, connection, activeConnection, apActive, canE
             <CardHeader actions={{
                 actions: (
                     <>
-                        {/* Configure is hidden for a Custom AP (R9): its live config
-                            matches neither managed template, so it is read-only and the
-                            editor is suppressed rather than opened on a config it can't
-                            safely round-trip. Configure is also admin-gated even when
-                            shown: every change inside WiFiAPDialog ultimately needs admin
-                            to persist, so opening the dialog without admin would lead the
-                            user into a workflow they can't complete (audit
-                            halos-org/halos#121). */}
+                        {/* Custom APs are read-only (R9): the editor can't safely
+                            round-trip a config that matches neither managed template, so
+                            Configure is suppressed entirely. When shown it stays
+                            admin-gated, since every change it persists needs admin
+                            (audit halos-org/halos#121). */}
                         {editable && (
                             <AdminGatedButton variant="secondary" onClick={handleConfigure} style={{ marginRight: "var(--pf-global--spacer--sm)" }} isAdminGated={isAdminGated}>
                                 {_("Configure")}
@@ -1444,7 +1444,7 @@ export const WiFiAPConfig = ({ dev, connection, activeConnection, apActive, canE
                     <Alert
                         variant="info"
                         isInline
-                        title={_("This Access Point was configured outside HaLOS and is shown read-only. Reconfigure it from the command line.")}
+                        title={_("This access point was configured outside HaLOS, so it is shown read-only. To change it, use nmcli on the command line.")}
                         style={{ marginBottom: "1rem" }}
                     />
                 )}
