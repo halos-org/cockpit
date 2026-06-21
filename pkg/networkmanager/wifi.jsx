@@ -1455,6 +1455,8 @@ const WiFiAPClientList = ({ iface }) => {
 };
 
 // R19 outcome Alert copy, keyed on the verdict→phase mapping (ap-switch.js).
+// The success-* phases are intentionally not surfaced by the card (see the
+// render gate); their copy is kept here as the canonical outcome vocabulary.
 function apSwitchOutcomeTitle(phase) {
     switch (phase) {
     case "in-flight":
@@ -1667,8 +1669,12 @@ export const WiFiAPConfig = ({ dev, connection, activeConnection, apActive, canE
                         style={{ marginBottom: "1rem" }}
                     />
                 )}
-                {/* R19: distinct success / auto-revert / hard-failure / stranded outcomes. */}
-                {switchOutcome && switchOutcome.phase !== "in-flight" && !switchDismissed && (
+                {/* R19: auto-revert / hard-failure / stranded outcomes. A normal
+                    success is NOT bannered — a deliberate switch anticipates its
+                    own result and the card already shows the new mode; only the
+                    failure/recovery outcomes carry what the card cannot. */}
+                {switchOutcome && switchOutcome.phase !== "in-flight" &&
+                    switchOutcome.variant !== "success" && !switchDismissed && (
                     <Alert
                         variant={switchOutcome.variant}
                         isInline
