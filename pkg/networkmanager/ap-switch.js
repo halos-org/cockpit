@@ -41,6 +41,7 @@ export const AP_SWITCH_PATHS = {
 export const MANAGED_BRIDGE = "br0";
 export const MANAGED_BRIDGE_PORT = "br0-eth0";
 export const MANAGED_UPLINK = "eth0";
+export const MANAGED_AP_IFACE = "wlan0ap";
 export const MANAGED_ETH_CON = "halos-eth0"; // fixed-id standalone DHCP eth0 profile
 
 // Deadman / verdict windows (s). Conservative; tuned on hardware in Unit 7.
@@ -55,7 +56,10 @@ export const SWITCH_DEADMAN_WINDOW = 45;
  * Ordering invariants (hardware-verified recipe, halos-org/cockpit#79):
  *  - the active eth0 connection is brought DOWN before br0 (cloned MAC) goes
  *    live, so the cloned MAC is never on two interfaces at once;
+ *  - the AP psk is stashed BEFORE the enslave (NM drops the in-file psk once the
+ *    AP is a bridge port, so post-enslave activations re-feed it from the stash);
  *  - the AP is enslaved with NO ipv4.* in the same call (NM rejects it);
+ *  - the stale Isolated 10.42 NAT is flushed once the AP is a bridge port;
  *  - the fixed channel is set before, and the AP con-up is, last.
  * Every create is existence-guarded (idempotent).
  *
@@ -70,6 +74,8 @@ export function buildEnterBridgedScript({ apUuid, ethMac, gateway, channel }) {
     const BR = MANAGED_BRIDGE;
     const PORT = MANAGED_BRIDGE_PORT;
     const UP = MANAGED_UPLINK;
+    const AP_IFACE = MANAGED_AP_IFACE;
+    const WATCHDOG = AP_SWITCH_PATHS.watchdog;
     const { breadcrumb, stateDir, expectedGwFile } = AP_SWITCH_PATHS;
     const has = name => `nmcli -t -f NAME connection show | grep -qx ${shq(name)}`;
     return [
@@ -97,11 +103,25 @@ export function buildEnterBridgedScript({ apUuid, ethMac, gateway, channel }) {
         // Bring the bridge up (br0 holds the cloned-MAC lease).
         `nmcli connection up ${BR}`,
         `nmcli connection up ${PORT}`,
+        // Stash the AP psk while it is STILL in the keyfile — NM drops the
+        // in-file psk the moment the AP becomes a bridge port, so every
+        // post-enslave activation (the con-up below, the watchdog revert and
+        // boot-revert) sources it from the stash. `stash` fails the apply (via
+        // set -e) if it cannot, so the AP is never enslaved with no psk source.
+        `env AP_CON=${shq(apUuid)} ${WATCHDOG} stash`,
         // Enslave the AP — membership only, no ipv4.* in this call.
         `nmcli connection modify ${shq(apUuid)} connection.master ${BR} connection.slave-type bridge`,
-        // Fixed channel (R3), then bring the AP up last.
+        // Fixed channel (R3).
         `nmcli connection modify ${shq(apUuid)} 802-11-wireless.channel ${shq(String(channel))}`,
-        `nmcli connection up ${shq(apUuid)}`,
+        // Drop the now-stale Isolated NAT (90-ap-nat won't re-add it for a bridge
+        // port, but the rule installed while Isolated lingers, inert, otherwise).
+        `iptables -t nat -D POSTROUTING -s 10.42.0.0/24 -j MASQUERADE 2>/dev/null || true`,
+        `iptables -D FORWARD -i ${AP_IFACE} -j ACCEPT 2>/dev/null || true`,
+        `iptables -D FORWARD -o ${AP_IFACE} -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || true`,
+        // Bring the AP up last — via the shared psk-aware activation (a post-
+        // enslave con-up needs the psk re-fed; ${WATCHDOG} up does it identically
+        // to the watchdog revert).
+        `env AP_CON=${shq(apUuid)} ${WATCHDOG} up`,
     ].join("\n");
 }
 
