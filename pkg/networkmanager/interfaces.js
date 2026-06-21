@@ -628,6 +628,7 @@ export function NetworkManagerModel() {
                 ssid: utils.decode_nm_property(get("802-11-wireless", "ssid", [])),
                 mode: get("802-11-wireless", "mode", "infrastructure"),
                 band: get("802-11-wireless", "band"),
+                channel: get("802-11-wireless", "channel", 0),
                 hidden: get("802-11-wireless", "hidden", false),
             };
         }
@@ -817,6 +818,11 @@ export function NetworkManagerModel() {
             set("802-11-wireless", "mode", "s", settings.wifi.mode);
             if (settings.wifi.band)
                 set("802-11-wireless", "band", "s", settings.wifi.band);
+            // NM requires a band whenever channel is non-zero, so emit a fixed
+            // channel only alongside a band; otherwise clear it, so neither a
+            // missing band nor Automatic (channel 0) leaves a stale channel.
+            set("802-11-wireless", "channel", "u",
+                (settings.wifi.band && settings.wifi.channel) ? settings.wifi.channel : undefined);
             set("802-11-wireless", "hidden", "b", settings.wifi.hidden);
         } else {
             delete result["802-11-wireless"];
