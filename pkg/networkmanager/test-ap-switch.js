@@ -53,14 +53,32 @@ QUnit.test("enslaves the AP with membership only — never ipv4 in the same call
     assert.notOk(line.includes("ipv4"), "no ipv4.* in the enslave call");
 });
 
-QUnit.test("sets the fixed channel, and brings the AP up LAST", function(assert) {
+QUnit.test("sets the fixed channel, and brings the AP up LAST via the shared psk-aware activation", function(assert) {
     const s = buildEnterBridgedScript(SAMPLE);
     const enslave = s.indexOf("connection.slave-type bridge");
     const channel = s.indexOf("802-11-wireless.channel '6'");
-    const apUp = s.indexOf("nmcli connection up 'ap-uuid-1'");
+    const apUp = s.indexOf("ap-bridge-watchdog.sh up");
     assert.ok(enslave < channel, "channel set after enslave");
     assert.ok(channel < apUp, "channel set before AP up");
-    assert.strictEqual(s.trimEnd().endsWith("nmcli connection up 'ap-uuid-1'"), true, "AP con-up is the last step");
+    assert.ok(s.includes("env AP_CON='ap-uuid-1' /usr/libexec/halos/ap-bridge-watchdog.sh up"),
+              "final con-up routes through the watchdog 'up' (psk re-feed), not a bare nmcli up");
+    assert.ok(s.trimEnd().endsWith("ap-bridge-watchdog.sh up"), "AP activation is the last step");
+});
+
+QUnit.test("drops the stale Isolated 10.42 NAT after bridging", function(assert) {
+    const s = buildEnterBridgedScript(SAMPLE);
+    assert.ok(s.includes("iptables -t nat -D POSTROUTING -s 10.42.0.0/24 -j MASQUERADE"), "flushes the stale MASQUERADE");
+    assert.ok(s.includes("iptables -D FORWARD -i wlan0ap"), "flushes the stale FORWARD");
+});
+
+QUnit.test("stashes the psk BEFORE enslaving (NM drops the in-file psk on enslave)", function(assert) {
+    const s = buildEnterBridgedScript(SAMPLE);
+    const stash = s.indexOf("ap-bridge-watchdog.sh stash");
+    const enslave = s.indexOf("connection.slave-type bridge");
+    assert.ok(stash > -1, "stash step present");
+    assert.ok(s.includes("env AP_CON='ap-uuid-1' /usr/libexec/halos/ap-bridge-watchdog.sh stash"),
+              "stash runs the watchdog with the AP uuid in the environment");
+    assert.ok(stash < enslave, "psk stashed before the enslave drops the in-file copy");
 });
 
 QUnit.test("creates are idempotent (existence-guarded)", function(assert) {
