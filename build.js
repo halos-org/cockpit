@@ -43,7 +43,13 @@ const qunitOptions = {
     nodePaths,
     outbase: './pkg',
     outdir: "./qunit",
+    // Fonts/assets referenced by component CSS aren't needed to test behavior;
+    // mark them external (mirrors pkgOptions) so a render test's scss resolves.
+    external: ['*.woff', '*.woff2', '*.jpg', '*.svg', '../../assets*'],
     loader: {
+        // ".js": "jsx" mirrors the pkg build so a render test can import real
+        // components (some carry JSX in .js files); harmless for plain-JS tests.
+        ".js": "jsx",
         ".sh": "text",
     },
 };
@@ -198,6 +204,9 @@ async function build() {
             ...qunitOptions,
             entryPoints: testEntryPoints,
             plugins: [
+                // sassPlugin lets a render test import a component whose tree
+                // pulls .scss; the filter never fires for pure-JS test files.
+                sassPlugin({ loadPaths: [...nodePaths, 'node_modules'], filter: /\.scss/, quietDeps: true }),
                 cockpitTestHtmlPlugin({ testFiles: tests }),
             ],
         });
@@ -216,6 +225,7 @@ async function build() {
             ...qunitOptions,
             entryPoints: testEntryPoints,
             plugins: [
+                sassPlugin({ loadPaths: [...nodePaths, 'node_modules'], filter: /\.scss/, quietDeps: true }),
                 cockpitTestHtmlPlugin({ testFiles: tests }),
             ],
         });
