@@ -43,6 +43,12 @@ const MANAGED_BRIDGE = "br0";
 const MANAGED_UPLINK = "eth0";
 const MANAGED_AP_IFACE = "wlan0ap";
 
+// The Isolated AP's default address: a local DHCP/NAT island (R6/R7). The dialog
+// default, the ghost-connection seed, and the display text must all agree, so the
+// value lives here once. Exported because those consumers span modules.
+export const MANAGED_AP_DEFAULT_IP = "10.42.0.1";
+export const MANAGED_AP_DEFAULT_PREFIX = 24;
+
 function memberInterfaceName(connection) {
     return connection?.Settings?.connection?.interface_name;
 }
