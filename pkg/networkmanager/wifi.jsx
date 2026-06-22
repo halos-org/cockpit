@@ -1723,7 +1723,7 @@ export const WiFiAPConfig = ({ dev, connection, activeConnection, apActive, canE
                         <DescriptionListDescription>{security}</DescriptionListDescription>
                     </DescriptionListGroup>
                     <DescriptionListGroup>
-                        <DescriptionListTerm>{_("IP Range")}</DescriptionListTerm>
+                        <DescriptionListTerm>{_("AP address")}</DescriptionListTerm>
                         <DescriptionListDescription>
                             {apIpRangeText(integrationMode, settings?.ipv4)}
                         </DescriptionListDescription>

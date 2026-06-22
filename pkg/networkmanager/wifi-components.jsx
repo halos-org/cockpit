@@ -870,7 +870,7 @@ export const WiFiCard = ({ device, interfaceName }) => {
         apItems.push(
             { label: _("Clients"), value: apInfo.clientCount || "—" },
             { label: _("Security"), value: apInfo.security || "—" },
-            { label: _("IP Range"), value: apInfo.ipRange || "—" }
+            { label: _("AP address"), value: apInfo.ipRange || "—" }
         );
     }
 
