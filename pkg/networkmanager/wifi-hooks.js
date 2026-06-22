@@ -33,7 +33,7 @@ import cockpit from 'cockpit';
 
 import { ModelContext } from './model-context';
 import { decode_nm_property } from './utils';
-import { classifyApIntegrationMode, AP_INTEGRATION_MODES } from './ap-integration-mode';
+import { classifyApIntegrationMode, AP_INTEGRATION_MODES, MANAGED_AP_DEFAULT_IP, MANAGED_AP_DEFAULT_PREFIX } from './ap-integration-mode';
 
 const _ = cockpit.gettext;
 
@@ -67,7 +67,7 @@ export function apIpRangeText(mode, ipv4Settings) {
     const addr = ipv4Settings?.address_data?.[0];
     const addrText = addr ? `${addr.address}/${addr.prefix}` : null;
     if (mode === AP_INTEGRATION_MODES.ISOLATED)
-        return addrText || "10.42.0.1/24";
+        return addrText || `${MANAGED_AP_DEFAULT_IP}/${MANAGED_AP_DEFAULT_PREFIX}`;
     if (mode === AP_INTEGRATION_MODES.BRIDGED)
         return _("Leased from upstream gateway");
     // Custom, or any unknown mode, falls here: never the 10.42 default.

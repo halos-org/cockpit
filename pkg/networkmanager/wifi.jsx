@@ -50,6 +50,7 @@ import {
     classifyApIntegrationMode, isManagedApMode, AP_INTEGRATION_MODES,
     apModeIpv4Settings, apModeNormalizeChannel, isApModeChannelValid, apModeChannelToEmit,
     AP_CHANNELS_24, AP_CHANNELS_5_DFS_FREE,
+    MANAGED_AP_DEFAULT_IP, MANAGED_AP_DEFAULT_PREFIX,
 } from './ap-integration-mode';
 import {
     buildEnterBridgedScript, buildRevertCommand, buildArmDeadmanCommand, buildLaunchApplyCommand,
@@ -388,8 +389,8 @@ export const WiFiAPDialog = ({ settings, connection, dev, dualMode = false }) =>
     // option (R3): an unset/Automatic channel becomes the band default.
     const [channel, setChannel] = useState(apModeNormalizeChannel(initialMode, initialBand, safeSettings.wifi?.channel || 0));
     const [hidden, setHidden] = useState(safeSettings.wifi?.hidden || false);
-    const [ipAddress, setIPAddress] = useState(safeSettings.ipv4?.address_data?.[0]?.address || "10.42.0.1");
-    const [prefix, setPrefix] = useState(safeSettings.ipv4?.address_data?.[0]?.prefix || 24);
+    const [ipAddress, setIPAddress] = useState(safeSettings.ipv4?.address_data?.[0]?.address || MANAGED_AP_DEFAULT_IP);
+    const [prefix, setPrefix] = useState(safeSettings.ipv4?.address_data?.[0]?.prefix || MANAGED_AP_DEFAULT_PREFIX);
     const [dialogError, setDialogError] = useState("");
     const [mode, setMode] = useState(initialMode);
     const isBridged = mode === AP_INTEGRATION_MODES.BRIDGED;
@@ -940,7 +941,7 @@ export const WiFiAPDialog = ({ settings, connection, dev, dualMode = false }) =>
                                     <FormHelperText>
                                         <HelperText>
                                             <HelperTextItem>
-                                                {_("Default: 10.42.0.1")}
+                                                {cockpit.format(_("Default: $0"), MANAGED_AP_DEFAULT_IP)}
                                             </HelperTextItem>
                                         </HelperText>
                                     </FormHelperText>
@@ -1036,7 +1037,7 @@ export function getWiFiAPGhostSettings({ newIfaceName, dev }) {
         },
         ipv4: {
             method: "shared", // Enables DHCP server
-            address_data: [{ address: "10.42.0.1", prefix: 24 }],
+            address_data: [{ address: MANAGED_AP_DEFAULT_IP, prefix: MANAGED_AP_DEFAULT_PREFIX }],
         },
         ipv6: {
             method: "ignore",
@@ -1722,7 +1723,7 @@ export const WiFiAPConfig = ({ dev, connection, activeConnection, apActive, canE
                         <DescriptionListDescription>{security}</DescriptionListDescription>
                     </DescriptionListGroup>
                     <DescriptionListGroup>
-                        <DescriptionListTerm>{_("IP Range")}</DescriptionListTerm>
+                        <DescriptionListTerm>{_("AP address")}</DescriptionListTerm>
                         <DescriptionListDescription>
                             {apIpRangeText(integrationMode, settings?.ipv4)}
                         </DescriptionListDescription>
